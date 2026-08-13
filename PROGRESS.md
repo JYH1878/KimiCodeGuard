@@ -6,3 +6,4 @@
 - [x] 3. 沙箱采集：%TEMP%\kcg-sandbox 隔离 home，install 注入沙箱 config；kcg-probe 内 kimi -p 逐工具点名，默认(v2)与 KIMI_CODE_LEGACY_FLAG=1(v1) 双引擎各 6 工具，共 14 条真实 payload。
 - [x] 4. 脱敏入库：sanitize 写 fixtures/（引擎-工具-序号命名），14 条；fixtures/README.md 记录版本/命令/清单/交互补采步骤；docs/兼容矩阵.md 建（headless 两格实测、交互未测）；沙箱与凭据副本已删。
 - [x] 5. AGENTS.md 勘误：D1 事件数 v1=16/v2=20、§3 前端门禁改 npm、D4 路径关系改「运行时只读 ~/.kimi-code」、D5 并集按实测更新、证据索引加源码快照 0.36.0，均注明 2026-08-13 与源码证据。
+- [x] 6. 验收：fmt/clippy/test（19 项）全绿；垃圾 stdin exit 0 stdout {}；git 提交 4 个、status 干净；git grep 敏感串为零；release exe 195KB、空跑均值 26.2ms。M0 完成。
