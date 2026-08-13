@@ -1,0 +1,13 @@
+{
+  "name": "misc-allow-01-missing-tool-name",
+  "payload": {
+    "hook_event_name": "PreToolUse",
+    "session_id": "session_bypass",
+    "cwd": "D:/proj",
+    "tool_input": {
+      "command": "rm -rf /tmp/x"
+    },
+    "tool_call_id": "tool_bypass"
+  },
+  "expect": "allow"
+}

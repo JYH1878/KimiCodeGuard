@@ -1,0 +1,14 @@
+{
+  "name": "cred-deny-04-tilde-aws",
+  "payload": {
+    "hook_event_name": "PreToolUse",
+    "session_id": "session_bypass",
+    "cwd": "D:/proj",
+    "tool_name": "Edit",
+    "tool_input": {
+      "path": "~/.aws/credentials"
+    },
+    "tool_call_id": "tool_bypass"
+  },
+  "expect": "deny"
+}

@@ -1,0 +1,14 @@
+{
+  "name": "misc-allow-03-mcp-tool",
+  "payload": {
+    "hook_event_name": "PreToolUse",
+    "session_id": "session_bypass",
+    "cwd": "D:/proj",
+    "tool_name": "mcp__fs__delete_file",
+    "tool_input": {
+      "path": ".env"
+    },
+    "tool_call_id": "tool_bypass"
+  },
+  "expect": "allow"
+}

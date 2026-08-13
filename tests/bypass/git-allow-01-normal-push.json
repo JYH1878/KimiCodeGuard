@@ -1,0 +1,14 @@
+{
+  "name": "git-allow-01-normal-push",
+  "payload": {
+    "hook_event_name": "PreToolUse",
+    "session_id": "session_bypass",
+    "cwd": "D:/proj",
+    "tool_name": "Bash",
+    "tool_input": {
+      "command": "git push origin main"
+    },
+    "tool_call_id": "tool_bypass"
+  },
+  "expect": "allow"
+}

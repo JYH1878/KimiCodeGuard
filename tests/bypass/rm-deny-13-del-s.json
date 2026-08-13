@@ -1,0 +1,14 @@
+{
+  "name": "rm-deny-13-del-s",
+  "payload": {
+    "hook_event_name": "PreToolUse",
+    "session_id": "session_bypass",
+    "cwd": "D:/proj",
+    "tool_name": "Bash",
+    "tool_input": {
+      "command": "del /s /q build"
+    },
+    "tool_call_id": "tool_bypass"
+  },
+  "expect": "deny"
+}

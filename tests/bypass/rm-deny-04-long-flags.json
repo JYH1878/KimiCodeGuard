@@ -1,0 +1,14 @@
+{
+  "name": "rm-deny-04-long-flags",
+  "payload": {
+    "hook_event_name": "PreToolUse",
+    "session_id": "session_bypass",
+    "cwd": "D:/proj",
+    "tool_name": "Bash",
+    "tool_input": {
+      "command": "rm --recursive --force /tmp/build"
+    },
+    "tool_call_id": "tool_bypass"
+  },
+  "expect": "deny"
+}

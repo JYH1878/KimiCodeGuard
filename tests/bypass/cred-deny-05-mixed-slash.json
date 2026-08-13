@@ -1,0 +1,14 @@
+{
+  "name": "cred-deny-05-mixed-slash",
+  "payload": {
+    "hook_event_name": "PreToolUse",
+    "session_id": "session_bypass",
+    "cwd": "D:/proj",
+    "tool_name": "Read",
+    "tool_input": {
+      "path": "C:\\Users/tester/.ssh\\id_rsa"
+    },
+    "tool_call_id": "tool_bypass"
+  },
+  "expect": "deny"
+}

@@ -1,0 +1,14 @@
+{
+  "name": "misc-allow-04-glob-not-file-rule",
+  "payload": {
+    "hook_event_name": "PreToolUse",
+    "session_id": "session_bypass",
+    "cwd": "D:/proj",
+    "tool_name": "Glob",
+    "tool_input": {
+      "pattern": "**/.env"
+    },
+    "tool_call_id": "tool_bypass"
+  },
+  "expect": "allow"
+}

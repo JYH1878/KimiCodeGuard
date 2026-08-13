@@ -1,0 +1,14 @@
+{
+  "name": "cred-allow-05-pem-txt",
+  "payload": {
+    "hook_event_name": "PreToolUse",
+    "session_id": "session_bypass",
+    "cwd": "D:/proj",
+    "tool_name": "Read",
+    "tool_input": {
+      "path": "notes.pem.txt"
+    },
+    "tool_call_id": "tool_bypass"
+  },
+  "expect": "allow"
+}

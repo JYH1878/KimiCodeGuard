@@ -1,0 +1,14 @@
+{
+  "name": "cred-deny-07-pem",
+  "payload": {
+    "hook_event_name": "PreToolUse",
+    "session_id": "session_bypass",
+    "cwd": "D:/proj",
+    "tool_name": "Write",
+    "tool_input": {
+      "path": "certs/server.pem"
+    },
+    "tool_call_id": "tool_bypass"
+  },
+  "expect": "deny"
+}
