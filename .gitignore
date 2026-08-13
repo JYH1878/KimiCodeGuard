@@ -7,5 +7,8 @@ target/
 # Windows 垃圾
 Thumbs.db
 
+# 本地治理文件（只给自己和助手看，不进仓库）
+AGENTS.md
+
 # 只读参考仓库（不进本仓库）
 参考/
