@@ -13,7 +13,7 @@ M0：仓库地基 + debug hook + 真实 hook payload 采集。
 - `guard-hook/` — Rust 单文件 exe：PreToolUse hook 薄 shim（stdin → 落盘 / 规则判定 → exit 0/2），内置 config 注入器。
 - `guard-daemon/` — Tauri 2 托盘（规划中，M0 不开工）。
 - `fixtures/` — 真实 hook payload（已脱敏），解析器与规则的唯一数据地基。
-- `docs/` — 项目书、威胁模型、兼容矩阵。
+- `docs/` — 兼容矩阵（实测记录）；项目书、威胁模型待建。
 
 ## 构建
 
