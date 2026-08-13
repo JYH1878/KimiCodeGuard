@@ -1,0 +1,15 @@
+[package]
+name = "guard-hook"
+version = "0.1.0"
+edition = "2021"
+description = "KimiCodeGuard PreToolUse hook 薄 shim 与 config 注入器"
+
+[[bin]]
+name = "guard-hook"
+path = "src/main.rs"
+
+[dependencies]
+serde_json = "1"
+
+[dev-dependencies]
+toml = "0.8"
