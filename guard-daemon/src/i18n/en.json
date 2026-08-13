@@ -1,0 +1,17 @@
+{
+  "ask": {
+    "title": "Security Confirmation",
+    "subtitle": "Kimi Code requests a high-risk operation",
+    "rule": {
+      "git-force-push": "git force push — may overwrite remote history"
+    },
+    "ruleUnknown": "Unknown rule",
+    "toolLabel": "Tool",
+    "commandLabel": "Command to run",
+    "countdown": "Auto-deny in {{seconds}}s",
+    "expired": "Timed out — treated as denied",
+    "allow": "Allow",
+    "deny": "Deny",
+    "waiting": "Waiting for request…"
+  }
+}

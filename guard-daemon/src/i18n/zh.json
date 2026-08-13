@@ -1,0 +1,17 @@
+{
+  "ask": {
+    "title": "安全确认",
+    "subtitle": "Kimi Code 请求执行高风险操作",
+    "rule": {
+      "git-force-push": "git 强制推送，可能覆盖远端历史"
+    },
+    "ruleUnknown": "未知规则",
+    "toolLabel": "工具",
+    "commandLabel": "待执行命令",
+    "countdown": "{{seconds}} 秒后自动拒绝",
+    "expired": "已超时，按拒绝处理",
+    "allow": "允许",
+    "deny": "拒绝",
+    "waiting": "等待请求…"
+  }
+}
