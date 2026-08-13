@@ -129,7 +129,8 @@ fn injected_block_is_strictly_valid() {
     keys.sort();
     assert_eq!(keys, ["command", "event", "timeout"]);
     assert_eq!(hook["event"].as_str().unwrap(), "PreToolUse");
-    assert_eq!(hook["timeout"].as_integer().unwrap(), 10);
+    // ask 弹窗要等 60s，官方默认 30s 超时不够（HANDOFF 五.4），注入 75
+    assert_eq!(hook["timeout"].as_integer().unwrap(), 75);
     let command = hook["command"].as_str().unwrap();
     // 命令 = 加引号的 exe 绝对路径 + hook --dump-dir + 加引号的目录
     assert!(command.starts_with('"'));

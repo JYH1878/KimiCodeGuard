@@ -1,12 +1,18 @@
-//! guard-hook：KimiCodeGuard 的 PreToolUse debug hook 与 config 注入器。
+//! guard-hook：KimiCodeGuard 的 PreToolUse hook 与 config 注入器。
 //!
 //! 子命令：
-//! - `hook --dump-dir <目录>`     读 stdin 原文落盘，stdout 打印 {}，任何异常 exit 0
+//! - `hook [--dump-dir <目录>]`  stdin 解析 → 规则判定：放行打 {} exit 0；deny 中文原因 exit 2；
+//!   ask 走命名管道问 daemon，超时/连不上/拒绝一律 exit 2（D1/D2）。任何内部异常收敛为 exit 0 打 {}
 //! - `install --config <路径> --dump-dir <目录>`  原子注入 hook 标记块
 //! - `uninstall --config <路径>`  原子移除标记块
 //! - `sanitize --dump-dir <目录> --out-dir <目录>`  原始 payload 脱敏入库
 //!
-//! 热路径纪律（AGENTS.md 不变量 4）：禁止 unwrap/expect/panic，一切错误收敛为 exit 0。
+//! 热路径纪律（AGENTS.md 不变量 4）：禁止 unwrap/expect/panic，一切内部错误收敛为放行或按策略 exit 2。
+
+#![cfg_attr(
+    not(test),
+    deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)
+)]
 
 use std::collections::HashMap;
 use std::env;
@@ -15,6 +21,10 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use guard_hook::payload::Payload;
+use guard_hook::pipe::{self, AskOutcome};
+use guard_hook::rules::{evaluate, Decision};
 
 const BEGIN_MARK: &str = "# BEGIN KimiCodeGuard";
 const END_MARK: &str = "# END KimiCodeGuard";
@@ -28,10 +38,7 @@ fn main() -> ExitCode {
         return ExitCode::from(2);
     };
     match cmd {
-        "hook" => {
-            run_hook(&args[1..]);
-            ExitCode::SUCCESS
-        }
+        "hook" => run_hook(&args[1..]),
         "install" => run_install(&args[1..]),
         "uninstall" => run_uninstall(&args[1..]),
         "sanitize" => run_sanitize(&args[1..]),
@@ -45,7 +52,7 @@ fn main() -> ExitCode {
 fn usage() {
     eprintln!(
         "guard-hook <hook|install|uninstall|sanitize>\n\
-         \x20 hook --dump-dir <目录>\n\
+         \x20 hook [--dump-dir <目录>]\n\
          \x20 install --config <路径> --dump-dir <目录>\n\
          \x20 uninstall --config <路径>\n\
          \x20 sanitize --dump-dir <目录> --out-dir <目录>"
@@ -68,15 +75,59 @@ fn flag_value(args: &[String], name: &str) -> Option<String> {
 
 // ---------- hook ----------
 
-fn run_hook(args: &[String]) {
+fn run_hook(args: &[String]) -> ExitCode {
     let mut buf = Vec::new();
     // 读取失败也照常放行：hook 崩溃 = fail-open，但我们主动做到 exit 0。
     let _ = io::stdin().read_to_end(&mut buf);
     if let Some(dir) = flag_value(args, "--dump-dir") {
         let _ = dump_payload(Path::new(&dir), &buf);
     }
+
+    // 整条 JSON 非法 → 放行（D5 防御性解析）
+    let Some(payload) = Payload::parse(&buf) else {
+        return allow();
+    };
+    // 缺字段降级：规则已跳过，stderr 记一行（不变量 5）
+    for note in &payload.notes {
+        eprintln!("{note}");
+    }
+
+    match evaluate(&payload) {
+        Decision::Allow => allow(),
+        Decision::Deny { rule, reason } => {
+            eprintln!("KimiCodeGuard 已拦截（规则 {rule}）：{reason}");
+            ExitCode::from(2)
+        }
+        Decision::Ask { rule, question } => {
+            let tool = payload.tool_name.as_deref().unwrap_or("unknown");
+            let detail = payload
+                .bash_command()
+                .or_else(|| payload.file_path())
+                .unwrap_or("");
+            eprintln!("KimiCodeGuard 需人工确认（规则 {rule}）：{question}");
+            match pipe::ask(rule, tool, detail, payload.session_id.as_deref()) {
+                AskOutcome::Allow => allow(),
+                AskOutcome::Deny(reason) => {
+                    eprintln!("KimiCodeGuard：已拒绝（规则 {rule}）：{reason}");
+                    ExitCode::from(2)
+                }
+                // D2 fail-safe：超时 / 连不上 / 回复非法 → 主动 exit 2，绝不默认放行
+                AskOutcome::Unavailable(why) => {
+                    eprintln!(
+                        "KimiCodeGuard：无法取得人工确认（{why}），按安全策略拦截（规则 {rule}）"
+                    );
+                    ExitCode::from(2)
+                }
+            }
+        }
+    }
+}
+
+/// 放行：stdout 打 {} 并 exit 0（M0 行为不变）。
+fn allow() -> ExitCode {
     print!("{{}}");
     let _ = io::stdout().flush();
+    ExitCode::SUCCESS
 }
 
 fn dump_payload(dir: &Path, buf: &[u8]) -> io::Result<()> {
@@ -91,10 +142,12 @@ fn dump_payload(dir: &Path, buf: &[u8]) -> io::Result<()> {
 // ---------- 标记块 ----------
 
 /// 生成注入块文本（不含前导换行）。字段严格限定 event/command/timeout。
+/// timeout = 75：hook 官方默认 30s、超时即放行（fail-open，HANDOFF 五.4）；
+/// ask 弹窗要等用户 60s，必须留足余量。
 fn render_block(exe: &Path, dump_dir: &str) -> String {
     let command = format!("\"{}\" hook --dump-dir \"{}\"", exe.display(), dump_dir);
     format!(
-        "{}\n[[hooks]]\nevent = \"PreToolUse\"\ncommand = \"{}\"\ntimeout = 10\n{}\n",
+        "{}\n[[hooks]]\nevent = \"PreToolUse\"\ncommand = \"{}\"\ntimeout = 75\n{}\n",
         BEGIN_MARK,
         toml_basic_escape(&command),
         END_MARK
@@ -443,7 +496,7 @@ mod tests {
             "command = \"\\\"C:\\\\a b\\\\guard-hook.exe\\\" hook --dump-dir \\\"D:\\\\d d\\\"\""
         ));
         assert!(block.contains("event = \"PreToolUse\""));
-        assert!(block.contains("timeout = 10"));
+        assert!(block.contains("timeout = 75"));
         assert!(block.starts_with(BEGIN_MARK));
         assert!(block.ends_with(&format!("{}\n", END_MARK)));
     }
