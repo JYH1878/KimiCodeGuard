@@ -1,0 +1,1 @@
+{"hook_event_name":"PreToolUse","session_id":"session_eb837caf-c86c-402e-982e-7db2a4ad12f6","cwd":"<HOME>\\AppData\\Local\\Temp\\kcg-probe","client_type":"kimi_code_cli","tool_name":"Write","tool_input":{"path":"b2.txt","content":"hello-v2"},"tool_call_id":"tool_WIsC1JkncXvY51T0XO9oJOOO"}

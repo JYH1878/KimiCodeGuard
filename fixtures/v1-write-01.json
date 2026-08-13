@@ -1,0 +1,1 @@
+{"hook_event_name":"PreToolUse","session_id":"session_71b11733-dd7a-4887-abcb-bb2b537b3cbd","cwd":"<HOME>/AppData/Local/Temp/kcg-probe","tool_name":"Write","tool_input":{"path":"b1.txt","content":"hello-v1"},"tool_call_id":"tool_6GuFsf13VQsEE5M0FIajX7En"}

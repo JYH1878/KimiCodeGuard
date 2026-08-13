@@ -1,0 +1,1 @@
+{"hook_event_name":"PreToolUse","session_id":"session_f52842ae-7349-4607-8f41-ebc2ed3a2692","cwd":"<HOME>/AppData/Local/Temp/kcg-probe","tool_name":"Bash","tool_input":{"command":"echo hello-kcg-v1"},"tool_call_id":"tool_S8ZcNNEyBbIXuxOUXEuAVwam"}

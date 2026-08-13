@@ -1,0 +1,1 @@
+{"hook_event_name":"PreToolUse","session_id":"session_83e2c059-ec42-482d-bc9f-02c1f0287e85","cwd":"<HOME>\\AppData\\Local\\Temp\\kcg-probe","client_type":"kimi_code_cli","tool_name":"Bash","tool_input":{"command":"echo hello-kcg-v1"},"tool_call_id":"tool_vlYp58ChlOBfcLDOcNL99SrE"}

@@ -1,0 +1,1 @@
+{"hook_event_name":"PreToolUse","session_id":"session_095777c3-84e2-4e5d-a3ba-e8d5c2a38842","cwd":"<HOME>\\AppData\\Local\\Temp\\kcg-probe","client_type":"kimi_code_cli","tool_name":"Grep","tool_input":{"pattern":"hello","path":"a.txt"},"tool_call_id":"tool_0LloilBOl36cLRT7Qb8vYCHs"}
