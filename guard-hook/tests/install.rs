@@ -102,6 +102,53 @@ fn uninstall_restores_byte_for_byte() {
 }
 
 #[test]
+fn install_without_dump_dir_injects_plain_hook_command() {
+    let dir = temp_dir("nodump");
+    let config = dir.join("config.toml");
+    let original = "model = \"kimi\"\n";
+    fs::write(&config, original).unwrap();
+
+    // 不给 --dump-dir：注入块 command 必须就是 "<exe>" hook，不带落盘参数
+    let ok = guard_hook()
+        .args(["install", "--config"])
+        .arg(&config)
+        .status()
+        .unwrap();
+    assert!(ok.success());
+
+    let content = fs::read_to_string(&config).unwrap();
+    let parsed: toml::Value = toml::from_str(&content).unwrap();
+    let hooks = parsed
+        .get("hooks")
+        .and_then(|h| h.as_array())
+        .expect("hooks must be an array");
+    assert_eq!(hooks.len(), 1);
+    let hook = hooks[0].as_table().unwrap();
+    // 字段严格限定：event/command/timeout，多一个都不行
+    let mut keys: Vec<&str> = hook.keys().map(String::as_str).collect();
+    keys.sort();
+    assert_eq!(keys, ["command", "event", "timeout"]);
+    assert_eq!(hook["event"].as_str().unwrap(), "PreToolUse");
+    assert_eq!(hook["timeout"].as_integer().unwrap(), 75);
+    let command = hook["command"].as_str().unwrap();
+    assert!(command.starts_with('"'), "got: {command}");
+    assert!(command.contains("guard-hook"), "got: {command}");
+    assert!(command.ends_with("\" hook"), "got: {command}");
+    assert!(!command.contains("dump-dir"), "got: {command}");
+    let exe_part = command.trim_start_matches('"').split('"').next().unwrap();
+    assert!(std::path::Path::new(exe_part).is_absolute(), "{exe_part}");
+
+    // uninstall 字节级还原不回归
+    let ok = guard_hook()
+        .args(["uninstall", "--config"])
+        .arg(&config)
+        .status()
+        .unwrap();
+    assert!(ok.success());
+    assert_eq!(fs::read(&config).unwrap(), original.as_bytes());
+}
+
+#[test]
 fn injected_block_is_strictly_valid() {
     let dir = temp_dir("valid");
     let config = dir.join("config.toml");

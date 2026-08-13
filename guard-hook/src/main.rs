@@ -3,7 +3,7 @@
 //! 子命令：
 //! - `hook [--dump-dir <目录>]`  stdin 解析 → 规则判定：放行打 {} exit 0；deny 中文原因 exit 2；
 //!   ask 走命名管道问 daemon，超时/连不上/拒绝一律 exit 2（D1/D2）。任何内部异常收敛为 exit 0 打 {}
-//! - `install --config <路径> --dump-dir <目录>`  原子注入 hook 标记块
+//! - `install --config <路径> [--dump-dir <目录>]`  原子注入 hook 标记块（不给 --dump-dir 则 command 不带落盘参数）
 //! - `uninstall --config <路径>`  原子移除标记块
 //! - `sanitize --dump-dir <目录> --out-dir <目录>`  原始 payload 脱敏入库
 //!
@@ -53,7 +53,7 @@ fn usage() {
     eprintln!(
         "guard-hook <hook|install|uninstall|sanitize>\n\
          \x20 hook [--dump-dir <目录>]\n\
-         \x20 install --config <路径> --dump-dir <目录>\n\
+         \x20 install --config <路径> [--dump-dir <目录>]\n\
          \x20 uninstall --config <路径>\n\
          \x20 sanitize --dump-dir <目录> --out-dir <目录>"
     );
@@ -144,8 +144,12 @@ fn dump_payload(dir: &Path, buf: &[u8]) -> io::Result<()> {
 /// 生成注入块文本（不含前导换行）。字段严格限定 event/command/timeout。
 /// timeout = 75：hook 官方默认 30s、超时即放行（fail-open，HANDOFF 五.4）；
 /// ask 弹窗要等用户 60s，必须留足余量。
-fn render_block(exe: &Path, dump_dir: &str) -> String {
-    let command = format!("\"{}\" hook --dump-dir \"{}\"", exe.display(), dump_dir);
+/// dump_dir 为 None 时 command 就是 `"<exe>" hook`（日常防护不落盘 payload）。
+fn render_block(exe: &Path, dump_dir: Option<&str>) -> String {
+    let command = match dump_dir {
+        Some(dir) => format!("\"{}\" hook --dump-dir \"{}\"", exe.display(), dir),
+        None => format!("\"{}\" hook", exe.display()),
+    };
     format!(
         "{}\n[[hooks]]\nevent = \"PreToolUse\"\ncommand = \"{}\"\ntimeout = 75\n{}\n",
         BEGIN_MARK,
@@ -223,12 +227,11 @@ fn backup_path(config: &Path) -> PathBuf {
 // ---------- install / uninstall ----------
 
 fn run_install(args: &[String]) -> ExitCode {
-    let (Some(config), Some(dump_dir)) =
-        (flag_value(args, "--config"), flag_value(args, "--dump-dir"))
-    else {
-        eprintln!("install 需要 --config 与 --dump-dir");
+    let Some(config) = flag_value(args, "--config") else {
+        eprintln!("install 需要 --config（--dump-dir 可选）");
         return ExitCode::from(2);
     };
+    let dump_dir = flag_value(args, "--dump-dir");
     let config = PathBuf::from(config);
     let exe = match env::current_exe() {
         Ok(p) => p,
@@ -259,7 +262,10 @@ fn run_install(args: &[String]) -> ExitCode {
     }
 
     let base = original.as_deref().unwrap_or("");
-    let new_content = append_block(&remove_block(base), &render_block(&exe, &dump_dir));
+    let new_content = append_block(
+        &remove_block(base),
+        &render_block(&exe, dump_dir.as_deref()),
+    );
 
     if let Err(e) = atomic_write(&config, new_content.as_bytes()) {
         eprintln!("写入 config 失败（原文件未动）：{e}");
@@ -460,14 +466,14 @@ mod tests {
 
     #[test]
     fn remove_block_only_block() {
-        let block = render_block(Path::new("C:/x/guard-hook.exe"), "D:/d");
+        let block = render_block(Path::new("C:/x/guard-hook.exe"), Some("D:/d"));
         assert_eq!(remove_block(&block), "");
     }
 
     #[test]
     fn append_then_remove_restores_without_trailing_newline() {
         let src = "model = \"k\""; // 无行尾换行
-        let block = render_block(Path::new("C:/x/guard-hook.exe"), "D:/d");
+        let block = render_block(Path::new("C:/x/guard-hook.exe"), Some("D:/d"));
         let injected = append_block(src, &block);
         assert_eq!(remove_block(&injected), src);
     }
@@ -475,7 +481,7 @@ mod tests {
     #[test]
     fn append_then_remove_restores_with_trailing_newline() {
         let src = "model = \"k\"\n";
-        let block = render_block(Path::new("C:/x/guard-hook.exe"), "D:/d");
+        let block = render_block(Path::new("C:/x/guard-hook.exe"), Some("D:/d"));
         let injected = append_block(src, &block);
         assert_eq!(remove_block(&injected), src);
     }
@@ -483,7 +489,7 @@ mod tests {
     #[test]
     fn double_inject_is_idempotent() {
         let src = "model = \"k\"\n";
-        let block = render_block(Path::new("C:/x/guard-hook.exe"), "D:/d");
+        let block = render_block(Path::new("C:/x/guard-hook.exe"), Some("D:/d"));
         let once = append_block(&remove_block(src), &block);
         let twice = append_block(&remove_block(&once), &block);
         assert_eq!(once, twice);
@@ -491,7 +497,7 @@ mod tests {
 
     #[test]
     fn block_escapes_backslashes_and_quotes() {
-        let block = render_block(Path::new("C:\\a b\\guard-hook.exe"), "D:\\d d");
+        let block = render_block(Path::new("C:\\a b\\guard-hook.exe"), Some("D:\\d d"));
         assert!(block.contains(
             "command = \"\\\"C:\\\\a b\\\\guard-hook.exe\\\" hook --dump-dir \\\"D:\\\\d d\\\"\""
         ));
@@ -499,6 +505,15 @@ mod tests {
         assert!(block.contains("timeout = 75"));
         assert!(block.starts_with(BEGIN_MARK));
         assert!(block.ends_with(&format!("{}\n", END_MARK)));
+    }
+
+    #[test]
+    fn block_without_dump_dir_is_plain_hook_command() {
+        let block = render_block(Path::new("C:\\a b\\guard-hook.exe"), None);
+        assert!(block.contains("command = \"\\\"C:\\\\a b\\\\guard-hook.exe\\\" hook\""));
+        assert!(!block.contains("dump-dir"));
+        assert!(block.contains("event = \"PreToolUse\""));
+        assert!(block.contains("timeout = 75"));
     }
 
     #[test]
