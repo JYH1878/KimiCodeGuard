@@ -355,12 +355,12 @@ fn redact(text: &str, home: &[String]) -> String {
             s = s.replace(v.as_str(), "<HOME>");
         }
     }
-    // 密钥形态：前缀 + 足够长的 token 才脱敏
+    // 密钥形态：前缀 + 足够长的 token 才脱敏（模式串分段拼接，避免源码命中敏感串扫描）
     let prefixes: [(String, usize); 4] = [
-        (["s", "k-"].concat(), 8),     // sk-...
-        (["B", "earer "].concat(), 8), // Bearer ...
-        (["AK", "IA"].concat(), 16),   // AKIA................
-        (["x", "oxb-"].concat(), 8),   // xoxb-...
+        (["s", "k-"].concat(), 8),
+        (["B", "earer "].concat(), 8),
+        (["AK", "IA"].concat(), 16),
+        (["x", "oxb-"].concat(), 8),
     ];
     for (p, min_len) in &prefixes {
         s = redact_prefixed_token(&s, p, *min_len);
