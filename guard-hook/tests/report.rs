@@ -5,7 +5,8 @@
 //! - 事件 JSON：{event, ts, session_id, cwd, tool_name?, decision?, reason?, payload=原始stdin全文}
 //! - 上报连不上事件管道（200ms）→ 追加写 spool（目录不存在要重建）；绝不阻塞热路径、绝不 panic
 //! - lifecycle 连不上管道时 best-effort spawn daemon（detached 不等待），事件走 spool
-//! - install 追加注入三条生命周期 [[hooks]]（无 matcher，timeout 5），幂等，不破坏 PreToolUse 块
+//! - install 追加注入两条生命周期 [[hooks]]（SessionStart/SessionEnd，无 matcher，timeout 5），
+//!   幂等，不破坏 PreToolUse 块；SessionHeartbeat 是 v2 独有，注入会让 v1 静默忽略整段，永不注入
 
 use std::fs;
 use std::io::Write;
@@ -300,7 +301,7 @@ fn install_with_daemon_path_injects_lifecycle_hooks() {
     assert!(ok.success());
 
     let hooks = parse_hooks(&config);
-    assert_eq!(hooks.len(), 4, "PreToolUse + 三条生命周期");
+    assert_eq!(hooks.len(), 3, "PreToolUse + 两条生命周期");
 
     let pre = hooks[0].as_table().unwrap();
     assert_eq!(pre["event"].as_str().unwrap(), "PreToolUse");
@@ -325,7 +326,7 @@ fn install_with_daemon_path_injects_lifecycle_hooks() {
         events.push(t["event"].as_str().unwrap());
     }
     events.sort_unstable();
-    assert_eq!(events, ["SessionEnd", "SessionHeartbeat", "SessionStart"]);
+    assert_eq!(events, ["SessionEnd", "SessionStart"]);
 }
 
 #[test]
@@ -337,7 +338,7 @@ fn install_without_daemon_path_still_injects_lifecycle_report_only() {
     let ok = install_cmd(&config).status().unwrap();
     assert!(ok.success());
     let hooks = parse_hooks(&config);
-    assert_eq!(hooks.len(), 4);
+    assert_eq!(hooks.len(), 3);
     for h in &hooks[1..] {
         let cmd = h["command"].as_str().unwrap();
         assert!(cmd.contains("lifecycle --event "), "got: {cmd}");
@@ -394,7 +395,7 @@ fn reinstall_over_m2_block_keeps_pretooluse_entry() {
     assert!(content.starts_with("model = \"kimi\"\n"), "块外内容不丢");
 
     let hooks = parse_hooks(&config);
-    assert_eq!(hooks.len(), 4);
+    assert_eq!(hooks.len(), 3);
     let pre = &hooks[0];
     assert_eq!(pre["event"].as_str().unwrap(), "PreToolUse");
     assert_eq!(pre["timeout"].as_integer().unwrap(), 75);

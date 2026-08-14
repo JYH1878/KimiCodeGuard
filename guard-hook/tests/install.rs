@@ -114,8 +114,9 @@ fn install_without_dump_dir_injects_plain_hook_command() {
         .get("hooks")
         .and_then(|h| h.as_array())
         .expect("hooks must be an array");
-    // M3 起：PreToolUse + 三条生命周期（SessionStart/SessionEnd/SessionHeartbeat，timeout=5）
-    assert_eq!(hooks.len(), 4);
+    // M3 起：PreToolUse + 两条生命周期（SessionStart/SessionEnd，timeout=5；
+    // SessionHeartbeat 是 v2 独有，注入会让 v1 静默忽略整个 hooks 段，永不注入）
+    assert_eq!(hooks.len(), 3);
     let hook = hooks[0].as_table().unwrap();
     // 字段严格限定：event/command/timeout，多一个都不行
     let mut keys: Vec<&str> = hook.keys().map(String::as_str).collect();
@@ -136,7 +137,7 @@ fn install_without_dump_dir_injects_plain_hook_command() {
         .map(|h| h["event"].as_str().unwrap())
         .collect();
     events.sort_unstable();
-    assert_eq!(events, ["SessionEnd", "SessionHeartbeat", "SessionStart"]);
+    assert_eq!(events, ["SessionEnd", "SessionStart"]);
     for h in &hooks[1..] {
         assert_eq!(h["timeout"].as_integer().unwrap(), 5);
         assert!(h["command"]
@@ -177,8 +178,8 @@ fn injected_block_is_strictly_valid() {
         .get("hooks")
         .and_then(|h| h.as_array())
         .expect("hooks must be an array");
-    // M3 起：PreToolUse + 三条生命周期
-    assert_eq!(hooks.len(), 4);
+    // M3 起：PreToolUse + 两条生命周期（SessionStart/SessionEnd）
+    assert_eq!(hooks.len(), 3);
     let hook = hooks[0].as_table().unwrap();
     // 字段严格限定：event/command/timeout，多一个都不行
     let mut keys: Vec<&str> = hook.keys().map(String::as_str).collect();
@@ -202,5 +203,5 @@ fn injected_block_is_strictly_valid() {
         .map(|h| h["event"].as_str().unwrap())
         .collect();
     events.sort_unstable();
-    assert_eq!(events, ["SessionEnd", "SessionHeartbeat", "SessionStart"]);
+    assert_eq!(events, ["SessionEnd", "SessionStart"]);
 }

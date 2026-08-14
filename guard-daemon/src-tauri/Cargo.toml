@@ -8,6 +8,14 @@ rust-version = "1.77.2"
 # 独立 workspace：不进根 Cargo workspace（根 release profile 的 panic=abort 是 hook 专用）
 [workspace]
 
+# custom-protocol：tauri 的生产模式开关（官方模板固定写法，DO NOT REMOVE）。
+# 无此 feature 时 tauri 按 dev 模式构建（build.rs: dev = !custom_protocol）——
+# 不内嵌 frontendDist、窗口走 devUrl，裸 cargo build --release 会产出「弹窗
+# localhost 拒绝连接」的坏 exe（2026-08-14 M3 验收实踩）。
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

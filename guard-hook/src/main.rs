@@ -221,11 +221,13 @@ fn dump_payload(dir: &Path, buf: &[u8]) -> io::Result<()> {
 // ---------- 标记块 ----------
 
 /// 生成注入块文本（不含前导换行）。字段严格限定 event/command/timeout。
-/// 结构（M3）：PreToolUse（timeout=75）+ SessionStart/SessionEnd/SessionHeartbeat（timeout=5，无 matcher）。
+/// 结构（M3）：PreToolUse（timeout=75）+ SessionStart/SessionEnd（timeout=5，无 matcher）。
 /// timeout = 75：hook 官方默认 30s、超时即放行（fail-open，HANDOFF 五.4）；
 /// ask 弹窗要等用户 60s，必须留足余量。生命周期事件 5s 足够（上报是 200ms 内的事）。
 /// dump_dir 为 None 时 PreToolUse command 就是 `"<exe>" hook`（日常防护不落盘 payload）。
 /// daemon_path 为 Some 时生命周期命令带 `--daemon-path`（连不上事件管道时 best-effort 拉起 daemon）。
+/// 只注入双引擎交集事件：SessionHeartbeat 是 v2 独有，v1（0.34.0 实测）strict schema
+/// 遇未知事件会把**整个 hooks 段静默忽略**（所有防护失效）——永不注入 v2 独有事件。
 fn render_block(exe: &Path, dump_dir: Option<&str>, daemon_path: Option<&str>) -> String {
     let exe = exe.display();
     let pretool_command = match dump_dir {
@@ -241,7 +243,7 @@ fn render_block(exe: &Path, dump_dir: Option<&str>, daemon_path: Option<&str>) -
         BEGIN_MARK,
         toml_basic_escape(&pretool_command),
     );
-    for event in ["SessionStart", "SessionEnd", "SessionHeartbeat"] {
+    for event in ["SessionStart", "SessionEnd"] {
         let command = format!("\"{exe}\" lifecycle --event {event}{daemon_arg}");
         out.push_str(&format!(
             "[[hooks]]\nevent = \"{event}\"\ncommand = \"{}\"\ntimeout = 5\n",
@@ -601,7 +603,8 @@ mod tests {
         assert!(block.contains("timeout = 75"));
         assert!(block.contains("event = \"SessionStart\""));
         assert!(block.contains("event = \"SessionEnd\""));
-        assert!(block.contains("event = \"SessionHeartbeat\""));
+        // v1（0.34.0 实测）strict schema 遇 v2 独有事件会静默忽略整个 hooks 段：永不注入
+        assert!(!block.contains("SessionHeartbeat"));
         assert!(block.starts_with(BEGIN_MARK));
         assert!(block.ends_with(&format!("{}\n", END_MARK)));
     }
