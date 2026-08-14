@@ -2,7 +2,26 @@
 
 Kimi Code 的 Windows 安全卫士：托盘常驻，通过 PreToolUse hook 拦截危险操作（deny / ask 弹窗 / log），SQLite append-only + hash chain 审计落库（轨 A 已交付；轨 B wire.jsonl 回溯待后续里程碑）。
 
-> 开发守则与决策记录见 [AGENTS.md](AGENTS.md)。
+> 开发守则与决策记录（D1–D9）见 AGENTS.md —— 本地治理文件，不入库；公开版行为规范以 LICENSE 与本文档为准。
+
+## 演示
+
+危险命令直接被拦（Kimi Code 收到拒绝原因，不会执行）：
+
+```
+$ kimi -p "用 Bash 运行 rm -rf /tmp/demo"
+KimiCodeGuard 已拦截（规则 rm-force）：递归强制删除命令（rm -rf / del /s / Remove-Item -Recurse -Force 形态）   ← hook exit 2
+```
+
+`git push --force` 这类操作弹窗问人：置顶中文弹窗显示完整命令与 55 秒倒计时，点「允许」放行、点「拒绝」或不点（超时）一律拦截。
+
+每一次判定都进审计库（SQLite append-only + SHA-256 哈希链，改任何一条历史记录都会被「校验审计链」报红并定位行号）：
+
+```json
+{"ts":1786694872308,"event":"PreToolUse","session_id":"accept-m…","tool_name":"Bash","decision":"deny","reason":"规则 rm-force：递归强制删除命令…","hash":"7f1bf0b7ed0d24da…"}
+```
+
+托盘菜单随时可「导出审计 JSONL」拿到全量记录做复盘。
 
 ## 当前状态
 
