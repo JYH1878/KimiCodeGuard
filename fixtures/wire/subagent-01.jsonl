@@ -1,0 +1,2 @@
+{"type":"metadata","protocol_version":"1.5","created_at":1786000000000}
+{"type":"context.append_loop_event","event":{"type":"tool.call","stepUuid":"sa1","toolCallId":"call-fetch-1","name":"FetchURL","args":{"url":"https://example.com/docs"}},"time":1786000001000}

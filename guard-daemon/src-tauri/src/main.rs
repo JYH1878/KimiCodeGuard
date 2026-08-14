@@ -30,8 +30,9 @@ fn main() {
                 app.state::<daemon::PendingStore>().inner().clone(),
             );
             // M3：事件管道服务端（审计轨 A 落库 + spool 回收）+ 会话跟踪（空载自退）
-            let events_listening = daemon::start_events_server(app.handle());
-            tray::setup(app.handle(), listening, events_listening)?;
+            // M4：返回回溯任务提交口（轨 B），随启动自动回溯一次并传给托盘菜单
+            let backfill_tx = daemon::start_events_server(app.handle());
+            tray::setup(app.handle(), listening, backfill_tx.is_some(), backfill_tx)?;
 
             // ask 窗口点关闭只隐藏不销毁（hook 还在等回复时，超时逻辑照常兜底）
             if let Some(ask_window) = app.get_webview_window("ask") {

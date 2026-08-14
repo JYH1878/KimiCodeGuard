@@ -79,3 +79,64 @@ fn restore_first_row() {
     assert!(db.verify_chain().is_ok(), "还原后链校验必须绿");
     println!("已还原：链校验回绿");
 }
+
+// ---------- M4：回溯行（wire.*）篡改/还原仪式 ----------
+
+fn wire_backup_path() -> PathBuf {
+    let mut p = db_path();
+    p.set_extension("kcg-tamper-backup-wire.json");
+    p
+}
+
+#[test]
+#[ignore = "真机反向验证：篡改首条回溯行（改完请人工点托盘校验确认报红）"]
+fn tamper_first_wire_row() {
+    let path = db_path();
+    assert!(path.exists(), "audit.db 不存在：{}", path.display());
+    let conn = Connection::open(&path).expect("开库");
+    let (id, payload): (i64, String) = conn
+        .query_row(
+            "SELECT id, payload FROM events WHERE event LIKE 'wire.%' ORDER BY id ASC LIMIT 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .expect("库里至少要有一条 wire.* 回溯行（先跑一次回溯导入）");
+    std::fs::write(
+        wire_backup_path(),
+        serde_json::json!({"id": id, "payload": payload}).to_string(),
+    )
+    .expect("写备份");
+    conn.execute(
+        "UPDATE events SET payload = 'KCG-TAMPERED-WIRE-ROW' WHERE id = ?1",
+        [id],
+    )
+    .expect("篡改");
+    drop(conn);
+
+    let db = audit::AuditDb::open(&path).expect("重开库");
+    assert!(db.verify_chain().is_err(), "篡改回溯行后链校验必须红");
+    println!("已篡改首条回溯行（id={id}）：请点托盘「校验审计链」确认报红，然后跑 restore_first_wire_row 还原");
+}
+
+#[test]
+#[ignore = "真机反向验证：还原首条回溯行"]
+fn restore_first_wire_row() {
+    let backup = std::fs::read_to_string(wire_backup_path()).expect("先跑 tamper_first_wire_row");
+    let v: serde_json::Value = serde_json::from_str(&backup).expect("备份是合法 JSON");
+    let id = v["id"].as_i64().expect("备份含 id");
+    let payload = v["payload"].as_str().expect("备份含 payload").to_string();
+
+    let path = db_path();
+    let conn = Connection::open(&path).expect("开库");
+    conn.execute(
+        "UPDATE events SET payload = ?1 WHERE id = ?2",
+        rusqlite::params![payload, id],
+    )
+    .expect("还原");
+    drop(conn);
+    std::fs::remove_file(wire_backup_path()).expect("删备份");
+
+    let db = audit::AuditDb::open(&path).expect("重开库");
+    assert!(db.verify_chain().is_ok(), "还原后链校验必须绿");
+    println!("已还原回溯行：链校验回绿");
+}

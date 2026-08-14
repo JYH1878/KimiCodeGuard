@@ -1,0 +1,19 @@
+{"type":"metadata","protocol_version":"1.5","created_at":1785000000000}
+{"type":"config.update","profileName":"agent","cwd":"D:/work/demo","time":1785000000001}
+{"type":"turn.prompt","input":[{"type":"text","text":"帮我看看这个目录里有什么"}],"origin":{"kind":"user"},"time":1785000001000}
+{"type":"context.append_message","message":{"role":"user","content":[{"type":"text","text":"帮我看看这个目录里有什么"}],"toolCalls":[],"origin":{"kind":"user"}},"time":1785000001000}
+{"type":"turn.prompt","input":[{"type":"text","text":"<system-reminder>plan mode</system-reminder>"}],"origin":{"kind":"injection"},"time":1785000001001}
+{"type":"context.append_loop_event","event":{"type":"step.begin","uuid":"u1","turnId":"0","step":1},"time":1785000001002}
+{"type":"context.append_loop_event","event":{"type":"content.part","stepUuid":"u1","part":{"type":"think","think":"用户想看目录，先 ls"}},"time":1785000001003}
+{"type":"context.append_loop_event","event":{"type":"content.part","stepUuid":"u1","part":{"type":"text","text":"我先列一下目录。"}},"time":1785000001004}
+{"type":"context.append_loop_event","event":{"type":"tool.call","stepUuid":"u1","toolCallId":"call-bash-1","name":"Bash","args":{"command":"ls -la","description":"列出目录内容"}},"time":1785000002000}
+{"type":"context.append_loop_event","event":{"type":"tool.result","toolCallId":"call-bash-1","result":{"output":"total 0\n","isError":false}},"time":1785000002100}
+{"type":"context.append_loop_event","event":{"type":"tool.call","stepUuid":"u1","toolCallId":"call-write-1","name":"Write","args":{"path":"D:/work/demo/notes.txt","content":"hello"}},"time":1785000003000}
+{"type":"context.append_loop_event","event":{"type":"tool.call","stepUuid":"u1","toolCallId":"call-mcp-1","name":"mcp__demo__search","args":{"query":"example"}},"time":1785000004000}
+{"type":"permission.record_approval_result","turnId":0,"toolCallId":"call-bash-1","toolName":"Bash","action":"Running: ls -la","result":{"decision":"approved","scope":"session"},"time":1785000001999}
+{"type":"permission.record_approval_result","turnId":0,"toolCallId":"call-bash-2","toolName":"Bash","action":"Running: rm -rf /tmp/x","result":{"decision":"rejected"},"time":1785000005000}
+{"type":"usage.record","model":"kimi-k2","usage":{"inputOther":100,"output":5},"time":1785000006000}
+{"type":"llm.request","kind":"loop","provider":"moonshot","model":"kimi-k2","messageCount":3,"time":1785000001000}
+{"type":"future.unknown_operation","whatever":{"nested":true},"time":1785000007000}
+{"type":"turn.prompt","input":[{"type":"text","text":"再写一个文件"}],"origin":{"kind":"user"},"time":1785000008000}
+{"type":"context.append_loop_event","event":{"type":"tool.cal

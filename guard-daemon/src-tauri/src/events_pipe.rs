@@ -12,11 +12,15 @@
 //!   绝不拖垮 ask 防护。
 //! - sink：每条解析成功的事件（含 spool 回收的）都会克隆一份发过去——
 //!   会话跟踪（任务 4，空载自退）据此工作，与落库解耦。
+//!
+//! M4（审计轨 B）：worker 同时收 `WorkItem::Backfill` 回溯任务（wire.jsonl 增量
+//! 幂等导入 audit.db，见 `run_backfill`）。单 worker 串行 ⇒ 「唯一写者」不变量
+//! 覆盖回溯与实时两条写路径。
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufReader};
 use std::os::windows::io::FromRawHandle;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::{self, JoinHandle};
@@ -32,6 +36,7 @@ use windows_sys::Win32::System::Pipes::{
 };
 
 use crate::audit::{self, AuditDb, AuditEvent};
+use crate::wire;
 
 /// 单条连接的读超时：hook 连上会立刻写事件行，超过即按异常客户端处理
 const READ_TIMEOUT: Duration = Duration::from_secs(5);
@@ -116,10 +121,48 @@ pub fn recover_spool(spool_path: &Path, db: &AuditDb, sink: Option<&Sender<Audit
     kept
 }
 
+/// worker 的工作项：管道连接（轨 A）或回溯任务（轨 B）。
+/// 单通道串行 ⇒ worker 仍是 audit.db 唯一写者。
+pub enum WorkItem {
+    /// 一条已接管的管道连接
+    Conn(File),
+    /// wire.jsonl 回溯导入任务
+    Backfill(BackfillJob),
+}
+
+/// 一次回溯任务：扫描 root 下的 wire.jsonl，增量幂等导入后回复汇总
+pub struct BackfillJob {
+    /// sessions 根目录
+    pub root: PathBuf,
+    /// 完成回复（只发一次；接收端断开只记日志）
+    pub reply: Sender<BackfillSummary>,
+}
+
+/// 回溯汇总（托盘消息框 / 日志用）
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct BackfillSummary {
+    /// 发现的 wire.jsonl 文件数
+    pub files: u64,
+    /// 新导入行数
+    pub imported: u64,
+    /// 去重跳过行数
+    pub dup_skipped: u64,
+    /// 非法 JSON 行数
+    pub bad_lines: u64,
+    /// 末行撕裂（写入中）的文件数
+    pub torn_files: u64,
+    /// 超限跳过的文件数
+    pub oversized_files: u64,
+    /// false = 审计库不可用，什么也没导入
+    pub db_ok: bool,
+}
+
 /// 运行中的事件管道服务端。drop 不关线程，显式调 `shutdown`。
 pub struct Server {
     shutdown: ArcBool,
     pipe_name: String,
+    /// worker 通道的发送端（listener 持克隆；shutdown 时先 join listener 再 drop 本端）
+    work_tx: Option<Sender<WorkItem>>,
     listener: Option<JoinHandle<()>>,
     worker: Option<JoinHandle<()>>,
 }
@@ -127,13 +170,23 @@ pub struct Server {
 type ArcBool = std::sync::Arc<AtomicBool>;
 
 impl Server {
-    /// 停止监听并回收线程（与 ask_pipe 同范式：置标志 + 客户端身份碰管道唤醒 listener）。
+    /// 回溯任务提交口（克隆即得，发送端 cheap）
+    pub fn backfill_sender(&self) -> Sender<WorkItem> {
+        self.work_tx
+            .as_ref()
+            .expect("Server 未 shutdown 前 work_tx 必在")
+            .clone()
+    }
+
+    /// 停止监听并回收线程：置标志 → 碰管道唤醒 listener → join listener
+    /// （其 work_tx 克隆随退出 drop）→ drop 本端 → 通道关闭 → worker 退出后 join。
     pub fn shutdown(mut self) {
         self.shutdown.store(true, Ordering::SeqCst);
         let _ = OpenOptions::new().write(true).open(&self.pipe_name);
         if let Some(h) = self.listener.take() {
             let _ = h.join();
         }
+        drop(self.work_tx.take());
         if let Some(h) = self.worker.take() {
             let _ = h.join();
         }
@@ -154,7 +207,7 @@ pub fn start(
     spool_path: &Path,
     sink: Option<Sender<AuditEvent>>,
 ) -> io::Result<Server> {
-    let (conn_tx, conn_rx) = mpsc::channel::<File>();
+    let (work_tx, work_rx) = mpsc::channel::<WorkItem>();
     let (ready_tx, ready_rx) = mpsc::channel::<io::Result<()>>();
     let (worker_ready_tx, worker_ready_rx) = mpsc::channel::<()>();
     let shutdown: ArcBool = std::sync::Arc::new(AtomicBool::new(false));
@@ -162,6 +215,7 @@ pub fn start(
     let listener = {
         let pipe_name = pipe_name.to_string();
         let shutdown = shutdown.clone();
+        let conn_tx = work_tx.clone();
         thread::Builder::new()
             .name("kcg-events-listener".to_string())
             .spawn(move || listener_loop(&pipe_name, &conn_tx, &ready_tx, &shutdown))
@@ -190,7 +244,7 @@ pub fn start(
             .name("kcg-events-worker".to_string())
             .spawn(move || {
                 worker_loop(
-                    &conn_rx,
+                    &work_rx,
                     &db_path,
                     &spool_path,
                     sink,
@@ -207,6 +261,7 @@ pub fn start(
     Ok(Server {
         shutdown,
         pipe_name: pipe_name.to_string(),
+        work_tx: Some(work_tx),
         listener: Some(listener),
         worker: Some(worker),
     })
@@ -215,7 +270,7 @@ pub fn start(
 /// listener：创建实例 → 等连接 → 交连接 → 立刻建下一实例（与 ask_pipe 同范式，只入向）。
 fn listener_loop(
     pipe_name: &str,
-    conn_tx: &Sender<File>,
+    conn_tx: &Sender<WorkItem>,
     ready_tx: &Sender<io::Result<()>>,
     shutdown: &ArcBool,
 ) {
@@ -275,15 +330,17 @@ fn listener_loop(
         }
         // SAFETY: 连接已建立，句柄独占移交给 File，由 worker 用完关闭
         let file = unsafe { File::from_raw_handle(handle as _) };
-        if conn_tx.send(file).is_err() {
+        if conn_tx.send(WorkItem::Conn(file)).is_err() {
             return; // worker 已退出（只会发生在 shutdown 流程中）
         }
     }
 }
 
-/// worker：audit.db 唯一写者。先开库 + 回收 spool（发就绪信号），再串行收事件入库。
+/// worker：audit.db 唯一写者。先开库 + 回收 spool（发就绪信号），再串行处理工作项：
+/// 管道事件入库（轨 A）/ wire 回溯导入（轨 B）。大首扫期间管道事件在缓冲区排队不丢
+/// （hook 侧 fire-and-forget 语义不变），回溯与实时事件因此不会交错写库。
 fn worker_loop(
-    conn_rx: &Receiver<File>,
+    work_rx: &Receiver<WorkItem>,
     db_path: &Path,
     spool_path: &Path,
     sink: Option<Sender<AuditEvent>>,
@@ -305,14 +362,73 @@ fn worker_loop(
     }
     let _ = ready_tx.send(());
 
-    while let Ok(mut file) = conn_rx.recv() {
+    while let Ok(item) = work_rx.recv() {
         if shutdown.load(Ordering::SeqCst) {
             return;
         }
-        serve_one(&mut file, db.as_ref(), sink.as_ref());
-        // SAFETY: 句柄仍有效（File 尚未 drop）；断开后 drop 即关闭
-        unsafe { DisconnectNamedPipe(file_as_raw(&file)) };
+        match item {
+            WorkItem::Conn(mut file) => {
+                serve_one(&mut file, db.as_ref(), sink.as_ref());
+                // SAFETY: 句柄仍有效（File 尚未 drop）；断开后 drop 即关闭
+                unsafe { DisconnectNamedPipe(file_as_raw(&file)) };
+            }
+            WorkItem::Backfill(job) => {
+                let summary = run_backfill(&job.root, db.as_ref());
+                tracing::info!(
+                    files = summary.files,
+                    imported = summary.imported,
+                    dup = summary.dup_skipped,
+                    bad = summary.bad_lines,
+                    torn = summary.torn_files,
+                    db_ok = summary.db_ok,
+                    "wire 回溯导入完成"
+                );
+                let _ = job.reply.send(summary);
+            }
+        }
     }
+}
+
+/// 回溯导入：遍历 root 下全部 wire.jsonl，按文件游标增量扫描 + 幂等批量入库。
+/// 文件缩短（kimi 协议迁移整文件重写）→ 游标归零重扫，backfill_seen 行级去重兜底；
+/// 行号位移导致的少量重复属已知良性偏差（宁多不缺）。
+fn run_backfill(root: &Path, db: Option<&AuditDb>) -> BackfillSummary {
+    let mut summary = BackfillSummary {
+        db_ok: db.is_some(),
+        ..BackfillSummary::default()
+    };
+    let Some(db) = db else {
+        return summary;
+    };
+    for file in wire::discover(root) {
+        summary.files += 1;
+        let file_key = file.display().to_string();
+        let stored = db.backfill_cursor(&file_key).unwrap_or(0);
+        let mut scan = wire::scan_file(&file, root, stored + 1);
+        if scan.lines_consumed < stored {
+            tracing::info!(
+                "wire 文件缩短（协议迁移重写？），游标 {stored} → 0 全量重扫：{}",
+                file.display()
+            );
+            scan = wire::scan_file(&file, root, 1);
+        }
+        summary.bad_lines += scan.bad_lines;
+        summary.torn_files += u64::from(scan.torn);
+        summary.oversized_files += u64::from(scan.oversized);
+        let items: Vec<(String, AuditEvent)> = scan
+            .items
+            .into_iter()
+            .map(|it| (it.key, it.event))
+            .collect();
+        match db.append_backfill(&file_key, &items, scan.lines_consumed) {
+            Ok(stats) => {
+                summary.imported += stats.imported;
+                summary.dup_skipped += stats.dup_skipped;
+            }
+            Err(e) => tracing::error!("回溯入库失败（{}）：{e}", file.display()),
+        }
+    }
+    summary
 }
 
 /// 处理单条连接：读一行 → 解析 → 入库 + 转 sink。空行（shutdown 探针）静默跳过。

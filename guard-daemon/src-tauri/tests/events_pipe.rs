@@ -202,3 +202,146 @@ fn spool_path_contract() {
         "spool 目录：{p:?}"
     );
 }
+
+// ---------- M4：wire 回溯（审计轨 B） ----------
+
+use guard_daemon::events_pipe::{BackfillJob, WorkItem};
+
+/// 把 fixtures/wire/<name> 摆进临时 sessions 树，返回 (root, wire 文件路径)
+fn stage_wire_fixture(dir: &TempDir, name: &str, session: &str) -> (PathBuf, PathBuf) {
+    let root = dir.0.join("sessions");
+    let agent_dir = root.join("wd_t").join(session).join("agents").join("main");
+    std::fs::create_dir_all(&agent_dir).expect("建 agents 目录");
+    let dst = agent_dir.join("wire.jsonl");
+    let src = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join("fixtures")
+        .join("wire")
+        .join(name);
+    std::fs::copy(src, &dst).expect("复制 wire 样本");
+    (root, dst)
+}
+
+fn submit_backfill(
+    server: &events_pipe::Server,
+    root: PathBuf,
+) -> mpsc::Receiver<events_pipe::BackfillSummary> {
+    let (reply_tx, reply_rx) = mpsc::channel();
+    server
+        .backfill_sender()
+        .send(WorkItem::Backfill(BackfillJob {
+            root,
+            reply: reply_tx,
+        }))
+        .expect("提交回溯任务");
+    reply_rx
+}
+
+#[test]
+fn backfill_imports_wire_fixture() {
+    let dir = TempDir::new("bf");
+    let db_path = dir.0.join("audit.db");
+    let spool = dir.0.join("spool").join("events.jsonl");
+    let (root, _wire) = stage_wire_fixture(&dir, "v2-main-01.jsonl", "session_bf");
+    let pipe = test_pipe_name("bf");
+    let server = events_pipe::start(&pipe, &db_path, &spool, None).expect("启动");
+
+    let rx = submit_backfill(&server, root);
+    let summary = rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("等回溯回复");
+    assert!(summary.db_ok);
+    assert_eq!(summary.files, 1);
+    assert_eq!(summary.imported, 8, "v2 样本应导入 8 条");
+    assert_eq!(summary.torn_files, 1, "样本末行撕裂");
+    server.shutdown();
+
+    let db = AuditDb::open(&db_path).expect("回读开库");
+    assert_eq!(db.count().expect("count"), 8);
+    assert_eq!(db.verify_chain().expect("链校验"), 8);
+    let wire_file = _wire.display().to_string();
+    assert_eq!(
+        db.backfill_cursor(&wire_file).expect("游标"),
+        18,
+        "19 行撕裂 1 行，游标 18"
+    );
+    // 事件名抽查：导出含 wire.* 命名空间
+    let mut buf: Vec<u8> = Vec::new();
+    db.dump_jsonl(&mut buf).expect("导出");
+    let text = String::from_utf8(buf).expect("utf8");
+    assert!(text.contains("\"wire.session_start\""));
+    assert!(text.contains("\"wire.user_prompt\""));
+    assert!(text.contains("\"wire.tool_call\""));
+    assert!(text.contains("\"wire.permission\""));
+}
+
+#[test]
+fn backfill_rerun_is_zero_new() {
+    let dir = TempDir::new("bf2");
+    let db_path = dir.0.join("audit.db");
+    let spool = dir.0.join("spool").join("events.jsonl");
+    let (root, _w) = stage_wire_fixture(&dir, "v2-main-01.jsonl", "session_bf2");
+    let pipe = test_pipe_name("bf2");
+    let server = events_pipe::start(&pipe, &db_path, &spool, None).expect("启动");
+
+    let first = submit_backfill(&server, root.clone())
+        .recv_timeout(Duration::from_secs(10))
+        .expect("首扫回复");
+    assert_eq!(first.imported, 8);
+    let second = submit_backfill(&server, root)
+        .recv_timeout(Duration::from_secs(10))
+        .expect("重扫回复");
+    assert_eq!(second.imported, 0, "增量重扫必须 0 新增");
+    server.shutdown();
+
+    let db = AuditDb::open(&db_path).expect("回读开库");
+    assert_eq!(db.count().expect("count"), 8);
+    assert_eq!(db.verify_chain().expect("链校验"), 8);
+}
+
+#[test]
+fn backfill_db_unavailable_replies_db_not_ok() {
+    let dir = TempDir::new("bf3");
+    // 用文件挡住目录路径：AuditDb::open 必失败
+    let blocker = dir.0.join("blocker");
+    std::fs::write(&blocker, "not a dir").expect("写挡路文件");
+    let db_path = blocker.join("audit.db");
+    let spool = dir.0.join("spool").join("events.jsonl");
+    let (root, _w) = stage_wire_fixture(&dir, "subagent-01.jsonl", "session_bf3");
+    let pipe = test_pipe_name("bf3");
+    let server = events_pipe::start(&pipe, &db_path, &spool, None).expect("启动");
+
+    let summary = submit_backfill(&server, root)
+        .recv_timeout(Duration::from_secs(10))
+        .expect("回溯回复");
+    assert!(!summary.db_ok, "库不可用必须 db_ok=false");
+    assert_eq!(summary.imported, 0);
+
+    // 服务没崩：管道事件照常受理（只丢弃+日志），shutdown 正常
+    client_fire(&pipe, &event_line("still-alive"));
+    std::thread::sleep(Duration::from_millis(300));
+    server.shutdown();
+}
+
+#[test]
+fn events_served_after_backfill() {
+    let dir = TempDir::new("bf4");
+    let db_path = dir.0.join("audit.db");
+    let spool = dir.0.join("spool").join("events.jsonl");
+    let (root, _w) = stage_wire_fixture(&dir, "v1-main-01.jsonl", "session_bf4");
+    let pipe = test_pipe_name("bf4");
+    let server = events_pipe::start(&pipe, &db_path, &spool, None).expect("启动");
+
+    let summary = submit_backfill(&server, root)
+        .recv_timeout(Duration::from_secs(10))
+        .expect("回溯回复");
+    assert_eq!(summary.imported, 4, "v1 样本应导入 4 条");
+
+    // 回溯后管道实时事件照常入库，且与回溯行同链
+    client_fire(&pipe, &event_line("after"));
+    wait_count(&db_path, 5);
+    server.shutdown();
+
+    let db = AuditDb::open(&db_path).expect("回读开库");
+    assert_eq!(db.verify_chain().expect("链校验"), 5, "回溯+实时混插链绿");
+}

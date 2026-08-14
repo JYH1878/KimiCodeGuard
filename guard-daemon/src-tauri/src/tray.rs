@@ -3,6 +3,8 @@
 //! 消息框用 windows-sys MessageBoxW（不为两个弹窗引 tauri-plugin-dialog）。
 
 use std::path::PathBuf;
+use std::sync::mpsc::Sender;
+use std::time::Duration;
 
 use tauri::{
     menu::{CheckMenuItem, Menu, MenuItem},
@@ -12,13 +14,20 @@ use tauri::{
 use tauri_plugin_autostart::ManagerExt;
 
 use guard_daemon::audit;
+use guard_daemon::events_pipe::{BackfillJob, WorkItem};
+use guard_daemon::wire;
 
 pub const TRAY_ID: &str = "main-tray";
 
 /// 占位托盘图标（编译期嵌入，来自 KimiCodeBar 素材）
 const ICON_NORMAL: &[u8] = include_bytes!("../icons/tray-normal.png");
 
-pub fn setup(app: &AppHandle, listening: bool, events_listening: bool) -> tauri::Result<()> {
+pub fn setup(
+    app: &AppHandle,
+    listening: bool,
+    events_listening: bool,
+    backfill_tx: Option<Sender<WorkItem>>,
+) -> tauri::Result<()> {
     let status_text = match (listening, events_listening) {
         (true, true) => "状态：管道监听中",
         (true, false) => "状态：事件管道未监听",
@@ -28,6 +37,7 @@ pub fn setup(app: &AppHandle, listening: bool, events_listening: bool) -> tauri:
     let status = MenuItem::with_id(app, "status", status_text, false, None::<&str>)?;
     let verify = MenuItem::with_id(app, "verify-audit", "校验审计链", true, None::<&str>)?;
     let export = MenuItem::with_id(app, "export-audit", "导出审计 JSONL", true, None::<&str>)?;
+    let backfill = MenuItem::with_id(app, "backfill-history", "回溯历史会话", true, None::<&str>)?;
     // 开机自启：勾选态以系统真实状态为准（默认关，M3 拍板）
     let autostart_on = app.autolaunch().is_enabled().unwrap_or(false);
     let autostart = CheckMenuItem::with_id(
@@ -39,7 +49,10 @@ pub fn setup(app: &AppHandle, listening: bool, events_listening: bool) -> tauri:
         None::<&str>,
     )?;
     let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&status, &verify, &export, &autostart, &quit])?;
+    let menu = Menu::with_items(
+        app,
+        &[&status, &verify, &export, &backfill, &autostart, &quit],
+    )?;
 
     let autostart_in_handler = autostart.clone();
     TrayIconBuilder::with_id(TRAY_ID)
@@ -51,6 +64,7 @@ pub fn setup(app: &AppHandle, listening: bool, events_listening: bool) -> tauri:
             "quit" => app.exit(0),
             "verify-audit" => verify_audit(),
             "export-audit" => export_audit(),
+            "backfill-history" => backfill_history(&backfill_tx),
             "autostart" => {
                 let launch = app.autolaunch();
                 let was = launch.is_enabled().unwrap_or(false);
@@ -71,6 +85,62 @@ pub fn setup(app: &AppHandle, listening: bool, events_listening: bool) -> tauri:
         .build(app)?;
 
     Ok(())
+}
+
+/// 「回溯历史会话」（M4 审计轨 B）：提交回溯任务 → 另起线程等回复 → 中文摘要消息框。
+/// 增量幂等：重复扫只导入新行。回复超时 300s（首扫大库留足余量）。
+fn backfill_history(backfill_tx: &Option<Sender<WorkItem>>) {
+    let Some(tx) = backfill_tx else {
+        message_box(
+            "KimiCodeGuard 历史回溯",
+            "事件管道未监听，无法回溯（daemon 启动时降级，详见日志）。",
+            Icon::Error,
+        );
+        return;
+    };
+    let tx = tx.clone();
+    let _ = std::thread::Builder::new()
+        .name("kcg-tray-backfill".to_string())
+        .spawn(move || {
+            let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+            if tx
+                .send(WorkItem::Backfill(BackfillJob {
+                    root: wire::default_sessions_root(),
+                    reply: reply_tx,
+                }))
+                .is_err()
+            {
+                message_box(
+                    "KimiCodeGuard 历史回溯",
+                    "回溯任务提交失败（daemon 内部通道已断），请重启托盘。",
+                    Icon::Error,
+                );
+                return;
+            }
+            match reply_rx.recv_timeout(Duration::from_secs(300)) {
+                Ok(s) if s.db_ok => {
+                    let mut body = format!(
+                        "回溯完成：扫描 {} 个会话文件，新导入 {} 条，重复跳过 {} 条，损坏行 {} 条。",
+                        s.files, s.imported, s.dup_skipped, s.bad_lines
+                    );
+                    if s.torn_files > 0 {
+                        body += &format!("{} 个文件正在写入中，末行留待下次补扫。", s.torn_files);
+                    }
+                    body += "\n\n审计链校验与导出可正常覆盖回溯数据。";
+                    message_box("KimiCodeGuard 历史回溯", &body, Icon::Info);
+                }
+                Ok(_) => message_box(
+                    "KimiCodeGuard 历史回溯",
+                    "审计库不可用，回溯未执行（详见日志）。",
+                    Icon::Error,
+                ),
+                Err(_) => message_box(
+                    "KimiCodeGuard 历史回溯",
+                    "回溯超时（300 秒无回复），请查看日志。",
+                    Icon::Error,
+                ),
+            }
+        });
 }
 
 /// 「校验审计链」：全量重算 hash 链，结果弹中文消息框（绿=通过，红=被篡改/读库失败）。

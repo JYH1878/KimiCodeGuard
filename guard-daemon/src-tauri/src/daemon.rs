@@ -130,12 +130,16 @@ pub fn ask_respond(
 /// 会话跟踪巡检间隔
 const TRACK_TICK: Duration = Duration::from_secs(15);
 
-/// 启动事件管道服务端 + 会话跟踪线程。返回是否在监听。失败不阻断启动（只降级审计）。
+/// 启动事件管道服务端 + 会话跟踪线程。成功返回回溯任务提交口（Some），失败 None。
+/// 失败不阻断启动（只降级审计）。
 ///
 /// 数据流：events_pipe worker 落库后把事件克隆经 sink 发过来 → 跟踪线程喂 SessionTracker
 /// （Start 加 / End 删 / Heartbeat 刷新 / 24h 僵死清除）→ 每 TICK 巡检一次，
 /// 空载持续 idle_timeout（生产 5 分钟，`KCG_IDLE_EXIT_MS` 可注入）→ app.exit(0) 自退。
-pub fn start_events_server(app: &AppHandle) -> bool {
+///
+/// M4（审计轨 B）：启动后自动提交一次 wire 回溯任务（增量幂等——首跑大导入安装前
+/// 历史，之后每次启动只扫新增行；回复只记日志）。手动重扫走托盘「回溯历史会话」。
+pub fn start_events_server(app: &AppHandle) -> Option<Sender<events_pipe::WorkItem>> {
     let pipe_name = events_pipe::default_pipe_name();
     let db_path = audit::default_db_path();
     let spool_path = events_pipe::default_spool_path();
@@ -144,9 +148,10 @@ pub fn start_events_server(app: &AppHandle) -> bool {
         Ok(s) => s,
         Err(e) => {
             tracing::error!("events 管道监听启动失败：{e}（事件将只能走 spool，待下次启动回收）");
-            return false;
+            return None;
         }
     };
+    let backfill_tx = server.backfill_sender();
 
     let idle_timeout = std::env::var("KCG_IDLE_EXIT_MS")
         .ok()
@@ -162,7 +167,7 @@ pub fn start_events_server(app: &AppHandle) -> bool {
         .unwrap_or(sessions::ZOMBIE_AFTER);
 
     let app = app.clone();
-    thread::Builder::new()
+    let spawned = thread::Builder::new()
         .name("kcg-session-tracker".to_string())
         .spawn(move || {
             // Server 在此线程持有：线程退出即 drop（置 shutdown 标志）；不调用其方法
@@ -191,7 +196,40 @@ pub fn start_events_server(app: &AppHandle) -> bool {
         .unwrap_or_else(|e| {
             tracing::error!("创建会话跟踪线程失败：{e}");
             false
-        })
+        });
+    if !spawned {
+        return None;
+    }
+
+    // 启动自动回溯：独立线程等回复，不阻塞 setup；失败只记日志
+    let auto_tx = backfill_tx.clone();
+    let root = guard_daemon::wire::default_sessions_root();
+    let _ = thread::Builder::new()
+        .name("kcg-auto-backfill".to_string())
+        .spawn(move || {
+            let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+            if auto_tx
+                .send(events_pipe::WorkItem::Backfill(events_pipe::BackfillJob {
+                    root,
+                    reply: reply_tx,
+                }))
+                .is_err()
+            {
+                tracing::error!("自动回溯任务提交失败（worker 通道已断）");
+                return;
+            }
+            match reply_rx.recv() {
+                Ok(s) => tracing::info!(
+                    "启动自动回溯完成：{} 个文件，新导入 {} 条，重复跳过 {} 条",
+                    s.files,
+                    s.imported,
+                    s.dup_skipped
+                ),
+                Err(_) => tracing::error!("自动回溯回复通道断开"),
+            }
+        });
+
+    Some(backfill_tx)
 }
 
 /// 当前 Unix 毫秒（系统钟异常时为 0；0 会让所有会话立即僵死，属安全方向的降级）
