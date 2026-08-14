@@ -1,18 +1,10 @@
 //! install / uninstall 集成测试：原子写、幂等、逐字节还原、注入块合法性。
 
 use std::fs;
-use std::path::PathBuf;
 use std::process::Command;
-use std::sync::atomic::{AtomicU32, Ordering};
 
-static COUNTER: AtomicU32 = AtomicU32::new(0);
-
-fn temp_dir(tag: &str) -> PathBuf {
-    let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-    let dir = std::env::temp_dir().join(format!("kcg-test-{}-{}-{}", tag, std::process::id(), n));
-    fs::create_dir_all(&dir).unwrap();
-    dir
-}
+mod common;
+use common::TempDir;
 
 fn guard_hook() -> Command {
     Command::new(env!("CARGO_BIN_EXE_guard-hook"))
@@ -20,7 +12,7 @@ fn guard_hook() -> Command {
 
 #[test]
 fn torn_write_leaves_original_untouched() {
-    let dir = temp_dir("torn");
+    let dir = TempDir::new("kcg-test", "torn");
     let config = dir.join("config.toml");
     let original = "model = \"kimi\"\n";
     fs::write(&config, original).unwrap();
@@ -39,7 +31,7 @@ fn torn_write_leaves_original_untouched() {
 
 #[test]
 fn install_is_idempotent_and_backup_kept() {
-    let dir = temp_dir("idem");
+    let dir = TempDir::new("kcg-test", "idem");
     let config = dir.join("config.toml");
     let original = "model = \"kimi\"\n";
     fs::write(&config, original).unwrap();
@@ -72,7 +64,7 @@ fn uninstall_restores_byte_for_byte() {
         ("empty", ""),
         ("crlf", "model = \"kimi\"\r\n\r\n[permission]\r\n"),
     ] {
-        let dir = temp_dir(tag);
+        let dir = TempDir::new("kcg-test", tag);
         let config = dir.join("config.toml");
         fs::write(&config, original).unwrap();
         let dump = dir.join("dump");
@@ -103,7 +95,7 @@ fn uninstall_restores_byte_for_byte() {
 
 #[test]
 fn install_without_dump_dir_injects_plain_hook_command() {
-    let dir = temp_dir("nodump");
+    let dir = TempDir::new("kcg-test", "nodump");
     let config = dir.join("config.toml");
     let original = "model = \"kimi\"\n";
     fs::write(&config, original).unwrap();
@@ -122,7 +114,8 @@ fn install_without_dump_dir_injects_plain_hook_command() {
         .get("hooks")
         .and_then(|h| h.as_array())
         .expect("hooks must be an array");
-    assert_eq!(hooks.len(), 1);
+    // M3 起：PreToolUse + 三条生命周期（SessionStart/SessionEnd/SessionHeartbeat，timeout=5）
+    assert_eq!(hooks.len(), 4);
     let hook = hooks[0].as_table().unwrap();
     // 字段严格限定：event/command/timeout，多一个都不行
     let mut keys: Vec<&str> = hook.keys().map(String::as_str).collect();
@@ -137,6 +130,21 @@ fn install_without_dump_dir_injects_plain_hook_command() {
     assert!(!command.contains("dump-dir"), "got: {command}");
     let exe_part = command.trim_start_matches('"').split('"').next().unwrap();
     assert!(std::path::Path::new(exe_part).is_absolute(), "{exe_part}");
+    // 生命周期三条：不带 --daemon-path 时仅上报
+    let mut events: Vec<&str> = hooks[1..]
+        .iter()
+        .map(|h| h["event"].as_str().unwrap())
+        .collect();
+    events.sort_unstable();
+    assert_eq!(events, ["SessionEnd", "SessionHeartbeat", "SessionStart"]);
+    for h in &hooks[1..] {
+        assert_eq!(h["timeout"].as_integer().unwrap(), 5);
+        assert!(h["command"]
+            .as_str()
+            .unwrap()
+            .contains("lifecycle --event "));
+        assert!(!h["command"].as_str().unwrap().contains("--daemon-path"));
+    }
 
     // uninstall 字节级还原不回归
     let ok = guard_hook()
@@ -150,7 +158,7 @@ fn install_without_dump_dir_injects_plain_hook_command() {
 
 #[test]
 fn injected_block_is_strictly_valid() {
-    let dir = temp_dir("valid");
+    let dir = TempDir::new("kcg-test", "valid");
     let config = dir.join("config.toml");
     fs::write(&config, "model = \"kimi\"\n").unwrap();
 
@@ -169,7 +177,8 @@ fn injected_block_is_strictly_valid() {
         .get("hooks")
         .and_then(|h| h.as_array())
         .expect("hooks must be an array");
-    assert_eq!(hooks.len(), 1);
+    // M3 起：PreToolUse + 三条生命周期
+    assert_eq!(hooks.len(), 4);
     let hook = hooks[0].as_table().unwrap();
     // 字段严格限定：event/command/timeout，多一个都不行
     let mut keys: Vec<&str> = hook.keys().map(String::as_str).collect();
@@ -187,4 +196,11 @@ fn injected_block_is_strictly_valid() {
     // exe 路径必须是绝对路径
     let exe_part = command.trim_start_matches('"').split('"').next().unwrap();
     assert!(std::path::Path::new(exe_part).is_absolute(), "{exe_part}");
+    // 生命周期三条（含 dump-dir 时 PreToolUse 照旧，不受生命周期注入影响）
+    let mut events: Vec<&str> = hooks[1..]
+        .iter()
+        .map(|h| h["event"].as_str().unwrap())
+        .collect();
+    events.sort_unstable();
+    assert_eq!(events, ["SessionEnd", "SessionHeartbeat", "SessionStart"]);
 }

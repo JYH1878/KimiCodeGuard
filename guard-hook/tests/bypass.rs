@@ -15,16 +15,12 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use guard_hook::payload::Payload;
 use guard_hook::rules::{evaluate, evaluate_with, fs_canonicalize};
 
+mod common;
+use common::TempDir;
+
 const FAKE_HOME: &str = "C:/Users/tester";
 
 static COUNTER: AtomicU32 = AtomicU32::new(0);
-
-fn temp_dir(tag: &str) -> PathBuf {
-    let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-    let dir = std::env::temp_dir().join(format!("kcg-bypass-{}-{}-{}", tag, std::process::id(), n));
-    fs::create_dir_all(&dir).unwrap();
-    dir
-}
 
 // ---------- corpus 加载 ----------
 
@@ -152,6 +148,25 @@ fn run_hook(payload: &serde_json::Value, envs: &[(&str, String)]) -> std::proces
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    // 上报默认走死管道 + 临时 spool：不碰真机事件管道/审计库（M3）；调用方可显式覆盖
+    if !envs.iter().any(|(k, _)| *k == "KCG_EVENTS_PIPE") {
+        cmd.env(
+            "KCG_EVENTS_PIPE",
+            format!(
+                r"\\.\pipe\KCG.test.events.dead-bypass-{}",
+                std::process::id()
+            ),
+        );
+    }
+    // spool 落在随本次调用自删的临时目录里（guard 活到这个函数结束，子进程已退出）
+    let spool_guard;
+    if !envs.iter().any(|(k, _)| *k == "KCG_EVENTS_SPOOL") {
+        spool_guard = Some(TempDir::new("kcg-bypass", "spool"));
+        cmd.env(
+            "KCG_EVENTS_SPOOL",
+            spool_guard.as_ref().unwrap().join("events.jsonl"),
+        );
+    }
     for (k, v) in envs {
         cmd.env(k, v);
     }
@@ -420,7 +435,7 @@ fn read_payload_with(path: &str) -> Payload {
 #[cfg(windows)]
 #[test]
 fn short_name_83_still_denied() {
-    let dir = temp_dir("83");
+    let dir = TempDir::new("kcg-bypass", "83");
     let long = dir.join(".env.production");
     fs::write(&long, "SECRET=x").unwrap();
     let long_str = long.to_string_lossy().to_string();
@@ -469,7 +484,8 @@ fn junction_into_ssh_dir_still_denied() {
     let canary_name = format!("kcg-junction-canary-{}", std::process::id());
     let canary = ssh.join(&canary_name);
     fs::write(&canary, "kcg").unwrap();
-    let link = temp_dir("junc").join("link");
+    let junc_dir = TempDir::new("kcg-bypass", "junc");
+    let link = junc_dir.join("link");
     let st = Command::new("cmd")
         .args(["/c", "mklink", "/J"])
         .arg(&link)

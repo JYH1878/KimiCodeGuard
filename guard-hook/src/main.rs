@@ -2,8 +2,13 @@
 //!
 //! 子命令：
 //! - `hook [--dump-dir <目录>]`  stdin 解析 → 规则判定：放行打 {} exit 0；deny 中文原因 exit 2；
-//!   ask 走命名管道问 daemon，超时/连不上/拒绝一律 exit 2（D1/D2）。任何内部异常收敛为 exit 0 打 {}
-//! - `install --config <路径> [--dump-dir <目录>]`  原子注入 hook 标记块（不给 --dump-dir 则 command 不带落盘参数）
+//!   ask 走命名管道问 daemon，超时/连不上/拒绝一律 exit 2（D1/D2）。任何内部异常收敛为 exit 0 打 {}。
+//!   判定后上报事件（deny/ask_allow/ask_deny/allow）到事件管道，连不上落 spool（M3 审计轨 A）。
+//! - `lifecycle --event <SessionStart|SessionEnd|SessionHeartbeat> [--daemon-path <路径>]`
+//!   生命周期事件上报，exit 恒 0；连不上管道时事件落 spool 并 best-effort 拉起 daemon（detached 不等待）
+//! - `install --config <路径> [--dump-dir <目录>] [--daemon-path <路径>]`  原子注入 hook 标记块
+//!   （PreToolUse timeout=75 + 三条生命周期 timeout=5；不给 --dump-dir 则 command 不带落盘参数；
+//!   不给 --daemon-path 则生命周期命令不带拉起参数，仅上报）
 //! - `uninstall --config <路径>`  原子移除标记块
 //! - `sanitize --dump-dir <目录> --out-dir <目录>`  原始 payload 脱敏入库
 //!
@@ -24,6 +29,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use guard_hook::payload::Payload;
 use guard_hook::pipe::{self, AskOutcome};
+use guard_hook::report;
 use guard_hook::rules::{evaluate, Decision};
 
 const BEGIN_MARK: &str = "# BEGIN KimiCodeGuard";
@@ -39,6 +45,7 @@ fn main() -> ExitCode {
     };
     match cmd {
         "hook" => run_hook(&args[1..]),
+        "lifecycle" => run_lifecycle(&args[1..]),
         "install" => run_install(&args[1..]),
         "uninstall" => run_uninstall(&args[1..]),
         "sanitize" => run_sanitize(&args[1..]),
@@ -51,9 +58,10 @@ fn main() -> ExitCode {
 
 fn usage() {
     eprintln!(
-        "guard-hook <hook|install|uninstall|sanitize>\n\
+        "guard-hook <hook|lifecycle|install|uninstall|sanitize>\n\
          \x20 hook [--dump-dir <目录>]\n\
-         \x20 install --config <路径> [--dump-dir <目录>]\n\
+         \x20 lifecycle --event <SessionStart|SessionEnd|SessionHeartbeat> [--daemon-path <路径>]\n\
+         \x20 install --config <路径> [--dump-dir <目录>] [--daemon-path <路径>]\n\
          \x20 uninstall --config <路径>\n\
          \x20 sanitize --dump-dir <目录> --out-dir <目录>"
     );
@@ -83,7 +91,7 @@ fn run_hook(args: &[String]) -> ExitCode {
         let _ = dump_payload(Path::new(&dir), &buf);
     }
 
-    // 整条 JSON 非法 → 放行（D5 防御性解析）
+    // 整条 JSON 非法 → 放行（D5 防御性解析）；无字段可上报，跳过事件
     let Some(payload) = Payload::parse(&buf) else {
         return allow();
     };
@@ -92,9 +100,26 @@ fn run_hook(args: &[String]) -> ExitCode {
         eprintln!("{note}");
     }
 
+    let raw = String::from_utf8_lossy(&buf).into_owned();
+    let report_pretool = |decision: &str, reason: Option<&str>| {
+        report::report(&report::Event {
+            event: "PreToolUse",
+            session_id: payload.session_id.as_deref().unwrap_or(""),
+            cwd: payload.cwd.as_deref().unwrap_or(""),
+            tool_name: payload.tool_name.as_deref(),
+            decision: Some(decision),
+            reason,
+            payload: &raw,
+        });
+    };
+
     match evaluate(&payload) {
-        Decision::Allow => allow(),
+        Decision::Allow => {
+            report_pretool("allow", None);
+            allow()
+        }
         Decision::Deny { rule, reason } => {
+            report_pretool("deny", Some(&format!("规则 {rule}：{reason}")));
             eprintln!("KimiCodeGuard 已拦截（规则 {rule}）：{reason}");
             ExitCode::from(2)
         }
@@ -106,13 +131,18 @@ fn run_hook(args: &[String]) -> ExitCode {
                 .unwrap_or("");
             eprintln!("KimiCodeGuard 需人工确认（规则 {rule}）：{question}");
             match pipe::ask(rule, tool, detail, payload.session_id.as_deref()) {
-                AskOutcome::Allow => allow(),
+                AskOutcome::Allow => {
+                    report_pretool("ask_allow", Some(&format!("规则 {rule}：用户允许")));
+                    allow()
+                }
                 AskOutcome::Deny(reason) => {
+                    report_pretool("ask_deny", Some(&format!("规则 {rule}：{reason}")));
                     eprintln!("KimiCodeGuard：已拒绝（规则 {rule}）：{reason}");
                     ExitCode::from(2)
                 }
                 // D2 fail-safe：超时 / 连不上 / 回复非法 → 主动 exit 2，绝不默认放行
                 AskOutcome::Unavailable(why) => {
+                    report_pretool("ask_deny", Some(&format!("规则 {rule}：{why}")));
                     eprintln!(
                         "KimiCodeGuard：无法取得人工确认（{why}），按安全策略拦截（规则 {rule}）"
                     );
@@ -121,6 +151,55 @@ fn run_hook(args: &[String]) -> ExitCode {
             }
         }
     }
+}
+
+// ---------- lifecycle ----------
+
+/// 生命周期事件上报（SessionStart/SessionEnd/SessionHeartbeat）。
+/// exit 恒 0：绝不阻塞会话生命周期。连不上事件管道时事件落 spool，
+/// 并 best-effort 拉起 daemon（detached 不等待；daemon 有 single-instance 兜底重复拉起）。
+fn run_lifecycle(args: &[String]) -> ExitCode {
+    let mut buf = Vec::new();
+    let _ = io::stdin().read_to_end(&mut buf);
+    let raw = String::from_utf8_lossy(&buf).into_owned();
+
+    // 防御性解析：只要 session_id/cwd 两个字段，解析失败按空串降级（D5）
+    let v = serde_json::from_str::<serde_json::Value>(&raw).ok();
+    let field = |key: &str| {
+        v.as_ref()
+            .and_then(|v| v.get(key))
+            .and_then(|x| x.as_str())
+            .map(str::to_string)
+    };
+    let fallback_event = field("hook_event_name").unwrap_or_else(|| "Lifecycle".to_string());
+    let event = flag_value(args, "--event").unwrap_or(fallback_event);
+    let session_id = field("session_id").unwrap_or_default();
+    let cwd = field("cwd").unwrap_or_default();
+
+    let delivered = report::report(&report::Event {
+        event: &event,
+        session_id: &session_id,
+        cwd: &cwd,
+        tool_name: None,
+        decision: None,
+        reason: None,
+        payload: &raw,
+    });
+    if !delivered {
+        if let Some(path) = flag_value(args, "--daemon-path") {
+            spawn_daemon_detached(&path);
+        }
+    }
+    ExitCode::SUCCESS
+}
+
+/// best-effort 拉起 daemon：detached（spawn 后不等待，Child drop 即分离），失败静默。
+fn spawn_daemon_detached(path: &str) {
+    let _ = std::process::Command::new(path)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
 }
 
 /// 放行：stdout 打 {} 并 exit 0（M0 行为不变）。
@@ -142,20 +221,36 @@ fn dump_payload(dir: &Path, buf: &[u8]) -> io::Result<()> {
 // ---------- 标记块 ----------
 
 /// 生成注入块文本（不含前导换行）。字段严格限定 event/command/timeout。
+/// 结构（M3）：PreToolUse（timeout=75）+ SessionStart/SessionEnd/SessionHeartbeat（timeout=5，无 matcher）。
 /// timeout = 75：hook 官方默认 30s、超时即放行（fail-open，HANDOFF 五.4）；
-/// ask 弹窗要等用户 60s，必须留足余量。
-/// dump_dir 为 None 时 command 就是 `"<exe>" hook`（日常防护不落盘 payload）。
-fn render_block(exe: &Path, dump_dir: Option<&str>) -> String {
-    let command = match dump_dir {
-        Some(dir) => format!("\"{}\" hook --dump-dir \"{}\"", exe.display(), dir),
-        None => format!("\"{}\" hook", exe.display()),
+/// ask 弹窗要等用户 60s，必须留足余量。生命周期事件 5s 足够（上报是 200ms 内的事）。
+/// dump_dir 为 None 时 PreToolUse command 就是 `"<exe>" hook`（日常防护不落盘 payload）。
+/// daemon_path 为 Some 时生命周期命令带 `--daemon-path`（连不上事件管道时 best-effort 拉起 daemon）。
+fn render_block(exe: &Path, dump_dir: Option<&str>, daemon_path: Option<&str>) -> String {
+    let exe = exe.display();
+    let pretool_command = match dump_dir {
+        Some(dir) => format!("\"{exe}\" hook --dump-dir \"{dir}\""),
+        None => format!("\"{exe}\" hook"),
     };
-    format!(
-        "{}\n[[hooks]]\nevent = \"PreToolUse\"\ncommand = \"{}\"\ntimeout = 75\n{}\n",
+    let daemon_arg = match daemon_path {
+        Some(p) => format!(" --daemon-path \"{p}\""),
+        None => String::new(),
+    };
+    let mut out = format!(
+        "{}\n[[hooks]]\nevent = \"PreToolUse\"\ncommand = \"{}\"\ntimeout = 75\n",
         BEGIN_MARK,
-        toml_basic_escape(&command),
-        END_MARK
-    )
+        toml_basic_escape(&pretool_command),
+    );
+    for event in ["SessionStart", "SessionEnd", "SessionHeartbeat"] {
+        let command = format!("\"{exe}\" lifecycle --event {event}{daemon_arg}");
+        out.push_str(&format!(
+            "[[hooks]]\nevent = \"{event}\"\ncommand = \"{}\"\ntimeout = 5\n",
+            toml_basic_escape(&command),
+        ));
+    }
+    out.push_str(END_MARK);
+    out.push('\n');
+    out
 }
 
 /// TOML 基本字符串转义（反斜杠与双引号）。
@@ -228,10 +323,11 @@ fn backup_path(config: &Path) -> PathBuf {
 
 fn run_install(args: &[String]) -> ExitCode {
     let Some(config) = flag_value(args, "--config") else {
-        eprintln!("install 需要 --config（--dump-dir 可选）");
+        eprintln!("install 需要 --config（--dump-dir / --daemon-path 可选）");
         return ExitCode::from(2);
     };
     let dump_dir = flag_value(args, "--dump-dir");
+    let daemon_path = flag_value(args, "--daemon-path");
     let config = PathBuf::from(config);
     let exe = match env::current_exe() {
         Ok(p) => p,
@@ -264,7 +360,7 @@ fn run_install(args: &[String]) -> ExitCode {
     let base = original.as_deref().unwrap_or("");
     let new_content = append_block(
         &remove_block(base),
-        &render_block(&exe, dump_dir.as_deref()),
+        &render_block(&exe, dump_dir.as_deref(), daemon_path.as_deref()),
     );
 
     if let Err(e) = atomic_write(&config, new_content.as_bytes()) {
@@ -466,14 +562,14 @@ mod tests {
 
     #[test]
     fn remove_block_only_block() {
-        let block = render_block(Path::new("C:/x/guard-hook.exe"), Some("D:/d"));
+        let block = render_block(Path::new("C:/x/guard-hook.exe"), Some("D:/d"), None);
         assert_eq!(remove_block(&block), "");
     }
 
     #[test]
     fn append_then_remove_restores_without_trailing_newline() {
         let src = "model = \"k\""; // 无行尾换行
-        let block = render_block(Path::new("C:/x/guard-hook.exe"), Some("D:/d"));
+        let block = render_block(Path::new("C:/x/guard-hook.exe"), Some("D:/d"), None);
         let injected = append_block(src, &block);
         assert_eq!(remove_block(&injected), src);
     }
@@ -481,7 +577,7 @@ mod tests {
     #[test]
     fn append_then_remove_restores_with_trailing_newline() {
         let src = "model = \"k\"\n";
-        let block = render_block(Path::new("C:/x/guard-hook.exe"), Some("D:/d"));
+        let block = render_block(Path::new("C:/x/guard-hook.exe"), Some("D:/d"), None);
         let injected = append_block(src, &block);
         assert_eq!(remove_block(&injected), src);
     }
@@ -489,7 +585,7 @@ mod tests {
     #[test]
     fn double_inject_is_idempotent() {
         let src = "model = \"k\"\n";
-        let block = render_block(Path::new("C:/x/guard-hook.exe"), Some("D:/d"));
+        let block = render_block(Path::new("C:/x/guard-hook.exe"), Some("D:/d"), None);
         let once = append_block(&remove_block(src), &block);
         let twice = append_block(&remove_block(&once), &block);
         assert_eq!(once, twice);
@@ -497,19 +593,22 @@ mod tests {
 
     #[test]
     fn block_escapes_backslashes_and_quotes() {
-        let block = render_block(Path::new("C:\\a b\\guard-hook.exe"), Some("D:\\d d"));
+        let block = render_block(Path::new("C:\\a b\\guard-hook.exe"), Some("D:\\d d"), None);
         assert!(block.contains(
             "command = \"\\\"C:\\\\a b\\\\guard-hook.exe\\\" hook --dump-dir \\\"D:\\\\d d\\\"\""
         ));
         assert!(block.contains("event = \"PreToolUse\""));
         assert!(block.contains("timeout = 75"));
+        assert!(block.contains("event = \"SessionStart\""));
+        assert!(block.contains("event = \"SessionEnd\""));
+        assert!(block.contains("event = \"SessionHeartbeat\""));
         assert!(block.starts_with(BEGIN_MARK));
         assert!(block.ends_with(&format!("{}\n", END_MARK)));
     }
 
     #[test]
     fn block_without_dump_dir_is_plain_hook_command() {
-        let block = render_block(Path::new("C:\\a b\\guard-hook.exe"), None);
+        let block = render_block(Path::new("C:\\a b\\guard-hook.exe"), None, None);
         assert!(block.contains("command = \"\\\"C:\\\\a b\\\\guard-hook.exe\\\" hook\""));
         assert!(!block.contains("dump-dir"));
         assert!(block.contains("event = \"PreToolUse\""));
