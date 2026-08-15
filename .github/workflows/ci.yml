@@ -44,6 +44,11 @@ jobs:
 
       # ---------- guard-daemon：独立 workspace ----------
 
+      # tauri-build 在编译期（含 clippy/test）校验 bundle resource 存在性：
+      # resources 指向根 target/release/guard-hook.exe，必须先构建根 release。
+      - name: 构建 guard-hook（根 release，daemon bundle resource 依赖）
+        run: cargo build --release --locked
+
       - name: 安装前端依赖
         working-directory: guard-daemon
         run: npm ci
