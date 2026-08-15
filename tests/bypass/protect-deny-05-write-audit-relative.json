@@ -1,0 +1,14 @@
+{
+  "name": "protect-deny-05-write-audit-relative",
+  "payload": {
+    "hook_event_name": "PreToolUse",
+    "session_id": "session_bypass",
+    "cwd": "C:/Users/tester/AppData/Local/KimiCodeGuard",
+    "tool_name": "Write",
+    "tool_input": {
+      "path": "audit.db"
+    },
+    "tool_call_id": "tool_bypass"
+  },
+  "expect": "deny"
+}

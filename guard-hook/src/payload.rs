@@ -83,6 +83,15 @@ impl Payload {
         }
         self.tool_input.as_ref()?.get("path")?.as_str()
     }
+
+    /// Write/Edit 工具的目标路径（M7 self-protect 拦写不拦读：Read 返回 None）。
+    pub fn write_path(&self) -> Option<&str> {
+        match self.tool_name.as_deref() {
+            Some("Write") | Some("Edit") => {}
+            _ => return None,
+        }
+        self.tool_input.as_ref()?.get("path")?.as_str()
+    }
 }
 
 #[cfg(test)]
@@ -108,6 +117,7 @@ mod tests {
         assert_eq!(p.tool_name.as_deref(), Some("Bash"));
         assert_eq!(p.bash_command(), Some("echo hi"));
         assert_eq!(p.file_path(), None); // Bash 无 path
+        assert_eq!(p.write_path(), None); // Bash 无 path
         assert_eq!(p.client_type, None);
         assert!(p.notes.is_empty(), "字段齐全不应有 note: {:?}", p.notes);
     }
@@ -124,6 +134,26 @@ mod tests {
         assert_eq!(p.session_title.as_deref(), Some("demo"));
         assert_eq!(p.file_path(), Some("a.txt"));
         assert_eq!(p.bash_command(), None); // Read 无 command
+    }
+
+    #[test]
+    fn write_path_only_for_write_edit() {
+        let write = Payload::parse(
+            br#"{"hook_event_name":"PreToolUse","tool_name":"Write","tool_input":{"path":"a.txt"}}"#,
+        )
+        .expect("解析成功");
+        let edit = Payload::parse(
+            br#"{"hook_event_name":"PreToolUse","tool_name":"Edit","tool_input":{"path":"a.txt"}}"#,
+        )
+        .expect("解析成功");
+        let read = Payload::parse(
+            br#"{"hook_event_name":"PreToolUse","tool_name":"Read","tool_input":{"path":"a.txt"}}"#,
+        )
+        .expect("解析成功");
+        assert_eq!(write.write_path(), Some("a.txt"));
+        assert_eq!(edit.write_path(), Some("a.txt"));
+        assert_eq!(read.write_path(), None); // 读不拦（M7 self-protect 合同）
+        assert_eq!(read.file_path(), Some("a.txt"));
     }
 
     #[test]

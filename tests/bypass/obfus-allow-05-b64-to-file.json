@@ -1,0 +1,14 @@
+{
+  "name": "obfus-allow-05-b64-to-file",
+  "payload": {
+    "hook_event_name": "PreToolUse",
+    "session_id": "session_bypass",
+    "cwd": "D:/proj",
+    "tool_name": "Bash",
+    "tool_input": {
+      "command": "echo cm0gLXJmIC8= | base64 -d > out.txt"
+    },
+    "tool_call_id": "tool_bypass"
+  },
+  "expect": "allow"
+}

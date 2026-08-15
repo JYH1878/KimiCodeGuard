@@ -1,0 +1,15 @@
+{
+  "name": "gd-allow-08-clean-f-clean",
+  "payload": {
+    "hook_event_name": "PreToolUse",
+    "session_id": "session_bypass",
+    "cwd": "D:/no-such-kcg-dir",
+    "tool_name": "Bash",
+    "tool_input": {
+      "command": "git clean -f"
+    },
+    "tool_call_id": "tool_bypass"
+  },
+  "expect": "allow",
+  "repo_dirty": false
+}

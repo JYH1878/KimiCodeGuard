@@ -1,0 +1,15 @@
+{
+  "name": "gd-ask-12-reset-hard-dirty",
+  "payload": {
+    "hook_event_name": "PreToolUse",
+    "session_id": "session_bypass",
+    "cwd": "D:/no-such-kcg-dir",
+    "tool_name": "Bash",
+    "tool_input": {
+      "command": "git reset --hard HEAD~1"
+    },
+    "tool_call_id": "tool_bypass"
+  },
+  "expect": "ask",
+  "repo_dirty": true
+}

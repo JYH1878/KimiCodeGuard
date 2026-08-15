@@ -1,0 +1,14 @@
+{
+  "name": "protect-deny-02-edit-hook-exe",
+  "payload": {
+    "hook_event_name": "PreToolUse",
+    "session_id": "session_bypass",
+    "cwd": "D:/proj",
+    "tool_name": "Edit",
+    "tool_input": {
+      "path": "C:/tools/guard-hook.exe"
+    },
+    "tool_call_id": "tool_bypass"
+  },
+  "expect": "deny"
+}

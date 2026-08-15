@@ -1,0 +1,14 @@
+{
+  "name": "obfus-deny-01-bash-c-rm",
+  "payload": {
+    "hook_event_name": "PreToolUse",
+    "session_id": "session_bypass",
+    "cwd": "D:/proj",
+    "tool_name": "Bash",
+    "tool_input": {
+      "command": "bash -c \"rm -rf /tmp/x\""
+    },
+    "tool_call_id": "tool_bypass"
+  },
+  "expect": "deny"
+}

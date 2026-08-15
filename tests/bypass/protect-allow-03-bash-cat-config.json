@@ -1,0 +1,14 @@
+{
+  "name": "protect-allow-03-bash-cat-config",
+  "payload": {
+    "hook_event_name": "PreToolUse",
+    "session_id": "session_bypass",
+    "cwd": "D:/proj",
+    "tool_name": "Bash",
+    "tool_input": {
+      "command": "cat C:/Users/tester/.kimi-code/config.toml"
+    },
+    "tool_call_id": "tool_bypass"
+  },
+  "expect": "allow"
+}

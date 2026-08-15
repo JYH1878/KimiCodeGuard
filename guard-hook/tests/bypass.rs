@@ -13,12 +13,26 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use guard_hook::payload::Payload;
-use guard_hook::rules::{evaluate, evaluate_with, fs_canonicalize};
+use guard_hook::rules::{evaluate, evaluate_with, fs_canonicalize, git_status_dirty, Env};
 
 mod common;
 use common::TempDir;
 
 const FAKE_HOME: &str = "C:/Users/tester";
+
+/// self-protect 假保护集（机器无关，corpus 保护路径据此编写）。
+fn fake_protected() -> Vec<String> {
+    [
+        "C:/Users/tester/.kimi-code/config.toml",
+        "C:/tools/guard-hook.exe",
+        "C:/tools/KimiCodeGuard.exe",
+        "C:/tools/guard-daemon.exe",
+        "C:/Users/tester/AppData/Local/KimiCodeGuard/audit.db",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
+}
 
 static COUNTER: AtomicU32 = AtomicU32::new(0);
 
@@ -28,6 +42,9 @@ struct Case {
     name: String,
     payload: serde_json::Value,
     expect: String,
+    /// git-destroy 工作区语料的「仓库是否脏」字段（历史/远端销毁语料无此字段，
+    /// 探测不得被调用）。M7 harness 读出喂给注入的假探测。
+    repo_dirty: Option<bool>,
 }
 
 fn corpus_dir() -> PathBuf {
@@ -73,12 +90,17 @@ fn load_corpus() -> Vec<Case> {
                 f.display()
             );
             assert!(payload.is_object(), "{} payload 必须是对象", f.display());
+            let repo_dirty = v.get("repo_dirty").map(|x| {
+                x.as_bool()
+                    .unwrap_or_else(|| panic!("{} repo_dirty 字段必须是布尔值", f.display()))
+            });
             let stem = f.file_stem().unwrap().to_string_lossy().to_string();
             assert_eq!(name, stem, "{} name 与文件名不一致", f.display());
             Case {
                 name,
                 payload,
                 expect,
+                repo_dirty,
             }
         })
         .collect()
@@ -101,11 +123,21 @@ fn corpus_matches_expectations() {
         "bypass corpus 至少 30 条，当前 {} 条",
         cases.len()
     );
+    let protected = fake_protected();
     for c in &cases {
         let bytes = serde_json::to_vec(&c.payload).unwrap();
         let p = Payload::parse(&bytes)
             .unwrap_or_else(|| panic!("{} 的 payload 无法被解析器解析", c.name));
-        let d = evaluate_with(&p, &fs_canonicalize, Some(FAKE_HOME));
+        // git 探测注入假实现：按语料的 repo_dirty 字段回答（历史/远端语料无字段，
+        // 探测不得被调用——由 non_destroy_corpus_never_probes_git 断言兜底）
+        let dirty = c.repo_dirty.unwrap_or(false);
+        let env = Env {
+            canon: &fs_canonicalize,
+            home: Some(FAKE_HOME),
+            protected: &protected,
+            git_dirty: &|_| dirty,
+        };
+        let d = evaluate_with(&p, &env);
         assert_eq!(
             d.kind(),
             c.expect,
@@ -138,6 +170,57 @@ fn corpus_covers_block_and_pass_per_rule() {
         count("git-", "ask") >= 2 && count("git-", "allow") >= 2,
         "git-force-push 需各 ≥2 条问与放"
     );
+    // M7 新规则：每规则 ≥8 拦 + ≥5 放（git-destroy 无 deny，「拦」= ask）
+    assert!(
+        count("protect-", "deny") >= 8 && count("protect-", "allow") >= 5,
+        "self-protect 需 ≥8 拦 + ≥5 放"
+    );
+    let obfus_block = count("obfus-", "deny") + count("obfus-", "ask");
+    assert!(
+        obfus_block >= 8 && count("obfus-", "allow") >= 5,
+        "shell-obfuscation 需 ≥8 拦（deny+ask）+ ≥5 放"
+    );
+    assert!(
+        count("gd-", "ask") >= 8 && count("gd-", "allow") >= 5,
+        "git-destroy 需 ≥8 问 + ≥5 放"
+    );
+}
+
+/// M7 合同：allow 热路径不新增 IO——非 git-destroy 语料跑全量时，
+/// git 探测调用数必须为 0（工作区销毁语料恰好探测一次，干净放行的也不例外）。
+#[test]
+fn non_destroy_corpus_never_probes_git() {
+    let cases = load_corpus();
+    let protected = fake_protected();
+    for c in &cases {
+        let calls = std::cell::Cell::new(0u32);
+        let probe = |_: &str| {
+            calls.set(calls.get() + 1);
+            true
+        };
+        let env = Env {
+            canon: &fs_canonicalize,
+            home: Some(FAKE_HOME),
+            protected: &protected,
+            git_dirty: &probe,
+        };
+        let bytes = serde_json::to_vec(&c.payload).unwrap();
+        let p = Payload::parse(&bytes)
+            .unwrap_or_else(|| panic!("{} 的 payload 无法被解析器解析", c.name));
+        let _ = evaluate_with(&p, &env);
+        if !c.name.starts_with("gd-") {
+            assert_eq!(
+                calls.get(),
+                0,
+                "非 git-destroy 语料 {} 调用了 git 探测（allow 热路径不许新增 IO）",
+                c.name
+            );
+        }
+        // 工作区销毁语料（带 repo_dirty 字段）必须真探测过——无条件放行是契约违背
+        if c.name.starts_with("gd-") && c.repo_dirty.is_some() {
+            assert_eq!(calls.get(), 1, "工作区销毁语料 {} 应恰好探测一次", c.name);
+        }
+    }
 }
 
 // ---------- 端到端（真实 exe 喂 stdin） ----------
@@ -182,12 +265,15 @@ fn run_hook(payload: &serde_json::Value, envs: &[(&str, String)]) -> std::proces
 
 #[test]
 fn e2e_deny_exits_2() {
-    for name in [
+    let names = [
         "rm-deny-01-rf-basic",
         "rm-deny-08-chain-and",
         "cred-deny-01-env-relative",
         "cred-deny-02-env-production",
-    ] {
+        "obfus-deny-01-bash-c-rm",
+        "obfus-deny-07-b64-pipe-rm",
+    ];
+    for name in names {
         let out = run_hook(&find_case(name).payload, &[]);
         assert_eq!(
             out.status.code(),
@@ -200,6 +286,35 @@ fn e2e_deny_exits_2() {
             "{name} stderr 应含中文拦截原因"
         );
     }
+    // self-protect 真机路径：payload 目标是当前 guard-hook exe 与 %LOCALAPPDATA% 审计库，
+    // 保护集由真实 exe 环境构建（机器无关，动态构造不入 corpus——corpus 走假 home）
+    let exe = env!("CARGO_BIN_EXE_guard-hook").replace('\\', "/");
+    let mut protect_payloads = vec![serde_json::json!({
+        "hook_event_name": "PreToolUse", "session_id": "s", "cwd": "D:/proj",
+        "tool_name": "Write", "tool_input": {"path": exe, "content": "x"},
+        "tool_call_id": "t"
+    })];
+    if let Ok(appdata) = std::env::var("LOCALAPPDATA") {
+        protect_payloads.push(serde_json::json!({
+            "hook_event_name": "PreToolUse", "session_id": "s", "cwd": "D:/proj",
+            "tool_name": "Bash",
+            "tool_input": {"command": format!("echo x > {}/KimiCodeGuard/audit.db", appdata.replace('\\', "/"))},
+            "tool_call_id": "t"
+        }));
+    }
+    for payload in protect_payloads {
+        let out = run_hook(&payload, &[]);
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "self-protect 真机路径应 exit 2，stderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("KimiCodeGuard 已拦截"),
+            "stderr 应含中文拦截原因"
+        );
+    }
 }
 
 #[test]
@@ -208,6 +323,9 @@ fn e2e_allow_exits_0() {
         "rm-allow-01-force-only",
         "git-allow-01-normal-push",
         "cred-allow-01-env-example",
+        "obfus-allow-01-bash-c-echo",
+        "gd-allow-01-clean-dry-run",
+        "protect-allow-01-read-config",
     ] {
         let out = run_hook(&find_case(name).payload, &[]);
         assert_eq!(
@@ -233,7 +351,12 @@ fn unique_pipe_name() -> String {
 
 #[test]
 fn e2e_ask_no_daemon_exits_2() {
-    for name in ["git-ask-01-force", "git-ask-04-force-with-lease"] {
+    for name in [
+        "git-ask-01-force",
+        "git-ask-04-force-with-lease",
+        "gd-ask-01-push-delete",
+        "obfus-ask-02-b64-benign",
+    ] {
         let pipe = unique_pipe_name(); // 不存在daemon监听
         let out = run_hook(
             &find_case(name).payload,
@@ -254,72 +377,82 @@ fn e2e_ask_no_daemon_exits_2() {
 #[cfg(windows)]
 #[test]
 fn e2e_ask_fake_daemon_allow_exits_0() {
-    let pipe = unique_pipe_name();
-    let daemon = fake_daemon::serve_once(&pipe, Some(r#"{"decision":"allow"}"#));
-    let out = run_hook(
-        &find_case("git-ask-01-force").payload,
-        &[
-            ("KCG_ASK_PIPE", pipe),
-            ("KCG_ASK_TIMEOUT_MS", "10000".to_string()),
-        ],
-    );
-    assert_eq!(
-        out.status.code(),
-        Some(0),
-        "daemon 回 allow 应 exit 0，stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert_eq!(String::from_utf8_lossy(&out.stdout), "{}");
-    assert!(daemon.join().unwrap(), "假 daemon 应完成一单服务");
+    // git-force-push 与新 git-destroy 各抽一条：daemon 回 allow → exit 0
+    for name in ["git-ask-01-force", "gd-ask-03-branch-D"] {
+        let pipe = unique_pipe_name();
+        let daemon = fake_daemon::serve_once(&pipe, Some(r#"{"decision":"allow"}"#));
+        let out = run_hook(
+            &find_case(name).payload,
+            &[
+                ("KCG_ASK_PIPE", pipe),
+                ("KCG_ASK_TIMEOUT_MS", "10000".to_string()),
+            ],
+        );
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{name} daemon 回 allow 应 exit 0，stderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "{}");
+        assert!(daemon.join().unwrap(), "假 daemon 应完成一单服务");
+    }
 }
 
 #[cfg(windows)]
 #[test]
 fn e2e_ask_fake_daemon_deny_exits_2() {
-    let pipe = unique_pipe_name();
-    let daemon = fake_daemon::serve_once(&pipe, Some(r#"{"decision":"deny","reason":"测试拒绝"}"#));
-    let out = run_hook(
-        &find_case("git-ask-02-f").payload,
-        &[
-            ("KCG_ASK_PIPE", pipe),
-            ("KCG_ASK_TIMEOUT_MS", "10000".to_string()),
-        ],
-    );
-    assert_eq!(
-        out.status.code(),
-        Some(2),
-        "daemon 回 deny 应 exit 2，stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert!(daemon.join().unwrap(), "假 daemon 应完成一单服务");
+    // git-force-push 与 shell-obfuscation 解码问人各抽一条
+    for name in ["git-ask-02-f", "obfus-ask-01-b64-pipe-gitforce"] {
+        let pipe = unique_pipe_name();
+        let daemon =
+            fake_daemon::serve_once(&pipe, Some(r#"{"decision":"deny","reason":"测试拒绝"}"#));
+        let out = run_hook(
+            &find_case(name).payload,
+            &[
+                ("KCG_ASK_PIPE", pipe),
+                ("KCG_ASK_TIMEOUT_MS", "10000".to_string()),
+            ],
+        );
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "{name} daemon 回 deny 应 exit 2，stderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(daemon.join().unwrap(), "假 daemon 应完成一单服务");
+    }
 }
 
 #[cfg(windows)]
 #[test]
 fn e2e_ask_daemon_silent_times_out_exits_2() {
-    let pipe = unique_pipe_name();
-    // daemon 连入后不回话：hold 30s；客户端 600ms 超时必须先 exit 2（D2 fail-safe）
-    let _daemon = fake_daemon::serve_once(&pipe, None);
-    let start = std::time::Instant::now();
-    let out = run_hook(
-        &find_case("git-ask-03-uf-combined").payload,
-        &[
-            ("KCG_ASK_PIPE", pipe),
-            ("KCG_ASK_TIMEOUT_MS", "600".to_string()),
-        ],
-    );
-    assert_eq!(
-        out.status.code(),
-        Some(2),
-        "超时应 exit 2，stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert!(
-        start.elapsed() < std::time::Duration::from_secs(20),
-        "超时不应挂死：{:?}",
-        start.elapsed()
-    );
-    // 不 join daemon：它仍在 hold，随测试进程退出被回收
+    // 抽 git-force-push 与新 git-destroy 工作区形态（真 exe 对不存在的 cwd 探测必按脏处理）
+    for name in ["git-ask-03-uf-combined", "gd-ask-12-reset-hard-dirty"] {
+        let pipe = unique_pipe_name();
+        // daemon 连入后不回话：hold 30s；客户端 600ms 超时必须先 exit 2（D2 fail-safe）
+        let _daemon = fake_daemon::serve_once(&pipe, None);
+        let start = std::time::Instant::now();
+        let out = run_hook(
+            &find_case(name).payload,
+            &[
+                ("KCG_ASK_PIPE", pipe),
+                ("KCG_ASK_TIMEOUT_MS", "600".to_string()),
+            ],
+        );
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "{name} 超时应 exit 2，stderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(20),
+            "超时不应挂死：{:?}",
+            start.elapsed()
+        );
+        // 不 join daemon：它仍在 hold，随测试进程退出被回收
+    }
 }
 
 #[cfg(windows)]
@@ -449,11 +582,13 @@ fn short_name_83_still_denied() {
         return;
     }
     // 短名形态（如 ENV~1.PRO）字符串层不命中名单，canonicalize 展开后必须命中
-    let d = evaluate_with(
-        &read_payload_with(&short),
-        &fs_canonicalize,
-        Some(FAKE_HOME),
-    );
+    let env = Env {
+        canon: &fs_canonicalize,
+        home: Some(FAKE_HOME),
+        protected: &[],
+        git_dirty: &|_| false,
+    };
+    let d = evaluate_with(&read_payload_with(&short), &env);
     assert_eq!(
         d.kind(),
         "deny",
@@ -511,5 +646,42 @@ fn junction_into_ssh_dir_still_denied() {
         d.kind(),
         "deny",
         "经 junction {via_link} 应被 canonicalize 兜底拦截"
+    );
+}
+
+// ---------- git 探测真机 E2E（M7：TEMP 建真 git 仓库，零残留） ----------
+
+/// 在 TempDir 里 git init + 一个 commit = 干净仓库；追加未跟踪文件 = 脏仓库。
+/// 非仓库目录 → 按有变更处理（true）。300ms 超时 / git 缺失方向与脏仓库一致。
+#[test]
+fn real_git_probe_in_temp_repo() {
+    let git = |dir: &Path, args: &[&str]| {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap_or_else(|e| panic!("git {args:?} 启动失败: {e}"));
+        assert!(
+            out.status.success(),
+            "git {args:?} 失败: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    let repo = TempDir::new("kcg-bypass", "gitprobe");
+    git(&repo, &["init"]);
+    git(&repo, &["config", "user.email", "t@example.invalid"]);
+    git(&repo, &["config", "user.name", "t"]);
+    fs::write(repo.join("a.txt"), "x").unwrap();
+    git(&repo, &["add", "a.txt"]);
+    git(&repo, &["commit", "-m", "init"]);
+    let repo_str = repo.to_string_lossy().replace('\\', "/");
+    assert!(!git_status_dirty(&repo_str), "干净仓库应判不脏");
+    fs::write(repo.join("b.txt"), "y").unwrap();
+    assert!(git_status_dirty(&repo_str), "出现未跟踪文件应判脏");
+    // 非仓库目录 → 按有变更处理（拦截方向）
+    let plain = TempDir::new("kcg-bypass", "gitprobe");
+    assert!(
+        git_status_dirty(&plain.to_string_lossy()),
+        "非仓库目录应判脏（fail-safe）"
     );
 }

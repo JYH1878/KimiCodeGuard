@@ -1,0 +1,14 @@
+{
+  "name": "protect-deny-09-bash-cp-daemon",
+  "payload": {
+    "hook_event_name": "PreToolUse",
+    "session_id": "session_bypass",
+    "cwd": "D:/proj",
+    "tool_name": "Bash",
+    "tool_input": {
+      "command": "cp build/KimiCodeGuard.exe C:/tools/KimiCodeGuard.exe"
+    },
+    "tool_call_id": "tool_bypass"
+  },
+  "expect": "deny"
+}

@@ -1,0 +1,14 @@
+{
+  "name": "protect-deny-14-redirect-attached",
+  "payload": {
+    "hook_event_name": "PreToolUse",
+    "session_id": "session_bypass",
+    "cwd": "D:/proj",
+    "tool_name": "Bash",
+    "tool_input": {
+      "command": "echo x 2>C:/tools/guard-daemon.exe"
+    },
+    "tool_call_id": "tool_bypass"
+  },
+  "expect": "deny"
+}

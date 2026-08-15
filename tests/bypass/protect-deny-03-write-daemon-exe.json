@@ -1,0 +1,14 @@
+{
+  "name": "protect-deny-03-write-daemon-exe",
+  "payload": {
+    "hook_event_name": "PreToolUse",
+    "session_id": "session_bypass",
+    "cwd": "D:/proj",
+    "tool_name": "Write",
+    "tool_input": {
+      "path": "C:/tools/KimiCodeGuard.exe"
+    },
+    "tool_call_id": "tool_bypass"
+  },
+  "expect": "deny"
+}

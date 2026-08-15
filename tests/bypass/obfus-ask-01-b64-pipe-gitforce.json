@@ -1,0 +1,14 @@
+{
+  "name": "obfus-ask-01-b64-pipe-gitforce",
+  "payload": {
+    "hook_event_name": "PreToolUse",
+    "session_id": "session_bypass",
+    "cwd": "D:/proj",
+    "tool_name": "Bash",
+    "tool_input": {
+      "command": "echo Z2l0IHB1c2ggLS1mb3JjZQ== | base64 -d | bash"
+    },
+    "tool_call_id": "tool_bypass"
+  },
+  "expect": "ask"
+}
