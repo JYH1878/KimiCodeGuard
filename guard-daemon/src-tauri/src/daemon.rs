@@ -14,7 +14,9 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use guard_daemon::ask_pipe::{self, AskReply, PipeEvent};
-use guard_daemon::{audit, events_pipe, sessions};
+use guard_daemon::{audit, events_pipe, protect, sessions};
+
+use crate::tray;
 
 /// 弹窗等人工确认的时长：55s（比 hook 侧 60s 超时早 5s，D2 fail-safe 留余量）
 const ASK_TIMEOUT_DEFAULT: Duration = Duration::from_secs(55);
@@ -238,4 +240,66 @@ fn guard_daemon_now_millis() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+// ---------- M5：自保护巡检 v1 ----------
+
+/// 启动时先同步算一次初始状态（托盘初始图标/文本用），随后巡逻线程每周期复查。
+/// config 路径解析失败（无 KIMI_CODE_HOME/USERPROFILE/HOME）也收敛为 ConfigMissing，
+/// 不 panic——防护巡检与 ask 防护互不牵连。
+pub fn initial_protect_status() -> (protect::ProtectStatus, Option<std::path::PathBuf>) {
+    let config = protect::config_path();
+    let status = match &config {
+        Some(c) => protect::check(c),
+        None => protect::ProtectStatus::ConfigMissing,
+    };
+    (status, config)
+}
+
+/// 自保护巡检线程：启动即查一次，之后每 interval 复查。状态变化时更新托盘
+/// （显红「防护失效」/ 恢复回绿）。interval 生产 5 分钟，`KCG_PROTECT_INTERVAL_MS`
+/// 仅供测试注入（>0 才生效）。全路径不 panic：IO/解析失败只产生状态枚举 + 日志。
+pub fn start_protect_patrol(
+    app: &AppHandle,
+    initial: (protect::ProtectStatus, Option<std::path::PathBuf>),
+) {
+    let interval = std::env::var("KCG_PROTECT_INTERVAL_MS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .filter(|&v| v > 0)
+        .map(Duration::from_millis)
+        .unwrap_or(protect::PROTECT_INTERVAL);
+    let app = app.clone();
+    let spawned = thread::Builder::new()
+        .name("kcg-protect-patrol".to_string())
+        .spawn(move || {
+            let mut last = Some(initial);
+            loop {
+                // 复查：任何错误收敛为状态枚举（ConfigMissing/HookExeMissing…），不 panic
+                let fresh = initial_protect_status();
+                if last.as_ref() != Some(&fresh) {
+                    tracing::info!(
+                        status = fresh.0.code(),
+                        "自保护巡检状态变化：{}",
+                        fresh.0.detail(
+                            fresh
+                                .1
+                                .as_deref()
+                                .unwrap_or_else(|| std::path::Path::new("<未知>"))
+                        )
+                    );
+                    tray::update_protect(&app, fresh.0.clone(), fresh.1.clone());
+                }
+                last = Some(fresh);
+                thread::sleep(interval);
+            }
+        })
+        .map(|_handle| true) // JoinHandle drop 即 detach，线程继续跑
+        .unwrap_or_else(|e| {
+            tracing::error!("创建自保护巡检线程失败：{e}");
+            false
+        });
+    if !spawned {
+        tracing::error!("自保护巡检未启动（托盘仍显示初始状态，不会自动刷新）");
+    }
 }

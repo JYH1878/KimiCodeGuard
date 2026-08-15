@@ -1,40 +1,66 @@
-//! 托盘图标：常驻。菜单：状态（禁用态文本）、校验审计链、导出审计 JSONL、开机自启（默认关）、退出。
-//! 图标为 KimiCodeBar 占位图标（不设计新图标）。
-//! 消息框用 windows-sys MessageBoxW（不为两个弹窗引 tauri-plugin-dialog）。
+//! 托盘图标：常驻。菜单：状态（禁用态文本）、一键修复（防护失效时可用）、校验审计链、
+//! 导出审计 JSONL、回溯历史会话、开机自启（默认关）、退出。
+//! 图标为 KimiCodeBar 占位图标（不设计新图标）；自保护巡检异常时换红图标 + 状态显红。
+//! 消息框用 windows-sys MessageBoxW（不为几个弹窗引 tauri-plugin-dialog）。
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 use std::time::Duration;
 
 use tauri::{
     menu::{CheckMenuItem, Menu, MenuItem},
     tray::TrayIconBuilder,
-    AppHandle,
+    AppHandle, Manager,
 };
 use tauri_plugin_autostart::ManagerExt;
 
 use guard_daemon::audit;
 use guard_daemon::events_pipe::{BackfillJob, WorkItem};
+use guard_daemon::protect::{self, ProtectStatus};
 use guard_daemon::wire;
 
 pub const TRAY_ID: &str = "main-tray";
 
 /// 占位托盘图标（编译期嵌入，来自 KimiCodeBar 素材）
 const ICON_NORMAL: &[u8] = include_bytes!("../icons/tray-normal.png");
+/// 防护失效红图标（自保护巡检异常态，M5 新增）
+const ICON_RED: &[u8] = include_bytes!("../icons/tray-red.png");
+
+/// 托盘自保护 UI 句柄（App 管理态）：巡检线程经 update_protect 更新文本/图标/修复菜单。
+/// tauri 的 MenuItem 包装有 unsafe Send/Sync（muda 内部 Rc 由 tauri 背书），
+/// 跨线程只经 run_on_main_thread 触达 UI，Windows 上菜单修改始终发生在主线程。
+pub struct ProtectUi {
+    status_item: MenuItem<tauri::Wry>,
+    repair_item: MenuItem<tauri::Wry>,
+    /// 防护健康时状态行显示的文本（管道监听态，setup 时定死）
+    healthy_text: String,
+}
 
 pub fn setup(
     app: &AppHandle,
     listening: bool,
     events_listening: bool,
     backfill_tx: Option<Sender<WorkItem>>,
+    initial: &(ProtectStatus, Option<PathBuf>),
 ) -> tauri::Result<()> {
-    let status_text = match (listening, events_listening) {
+    let pipe_text = match (listening, events_listening) {
         (true, true) => "状态：管道监听中",
         (true, false) => "状态：事件管道未监听",
         (false, true) => "状态：ask 管道未监听",
         (false, false) => "状态：管道未监听",
     };
+    let (initial_status, initial_config) = initial;
+    let healthy = initial_status.is_healthy();
+    let status_text = if healthy {
+        pipe_text.to_string()
+    } else {
+        format!(
+            "状态：防护失效——{}",
+            initial_status.detail(initial_config.as_deref().unwrap_or(Path::new("<未知>")))
+        )
+    };
     let status = MenuItem::with_id(app, "status", status_text, false, None::<&str>)?;
+    let repair = MenuItem::with_id(app, "protect-repair", "一键修复", !healthy, None::<&str>)?;
     let verify = MenuItem::with_id(app, "verify-audit", "校验审计链", true, None::<&str>)?;
     let export = MenuItem::with_id(app, "export-audit", "导出审计 JSONL", true, None::<&str>)?;
     let backfill = MenuItem::with_id(app, "backfill-history", "回溯历史会话", true, None::<&str>)?;
@@ -51,17 +77,35 @@ pub fn setup(
     let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
     let menu = Menu::with_items(
         app,
-        &[&status, &verify, &export, &backfill, &autostart, &quit],
+        &[
+            &status, &repair, &verify, &export, &backfill, &autostart, &quit,
+        ],
     )?;
+
+    app.manage(ProtectUi {
+        status_item: status,
+        repair_item: repair,
+        healthy_text: pipe_text.to_string(),
+    });
 
     let autostart_in_handler = autostart.clone();
     TrayIconBuilder::with_id(TRAY_ID)
         .tooltip("KimiCodeGuard")
-        .icon(tauri::image::Image::from_bytes(ICON_NORMAL)?)
+        .icon(tauri::image::Image::from_bytes(if healthy {
+            ICON_NORMAL
+        } else {
+            ICON_RED
+        })?)
         .menu(&menu)
         .show_menu_on_left_click(true)
         .on_menu_event(move |app, event| match event.id().as_ref() {
             "quit" => app.exit(0),
+            "protect-repair" => {
+                let app = app.clone();
+                let _ = std::thread::Builder::new()
+                    .name("kcg-tray-repair".to_string())
+                    .spawn(move || repair_protect(&app));
+            }
             "verify-audit" => verify_audit(),
             "export-audit" => export_audit(),
             "backfill-history" => backfill_history(&backfill_tx),
@@ -85,6 +129,91 @@ pub fn setup(
         .build(app)?;
 
     Ok(())
+}
+
+/// 自保护巡检线程回调：更新状态文本/图标/修复菜单（主线程执行，菜单修改线程安全）。
+/// 失败只记日志——托盘 UI 更新失败不影响防护本体。
+pub fn update_protect(app: &AppHandle, status: ProtectStatus, config: Option<PathBuf>) {
+    let app = app.clone();
+    let caller = app.clone();
+    let _ = caller.run_on_main_thread(move || {
+        let Some(ui) = app.try_state::<ProtectUi>() else {
+            tracing::warn!("托盘 ProtectUi 未初始化，忽略自保护状态更新");
+            return;
+        };
+        let healthy = status.is_healthy();
+        let text = if healthy {
+            ui.healthy_text.clone()
+        } else {
+            format!(
+                "状态：防护失效——{}",
+                status.detail(config.as_deref().unwrap_or(Path::new("<未知>")))
+            )
+        };
+        if let Err(e) = ui.status_item.set_text(text) {
+            tracing::error!("更新托盘状态文本失败：{e}");
+        }
+        if let Err(e) = ui.repair_item.set_enabled(!healthy) {
+            tracing::error!("更新一键修复菜单可用态失败：{e}");
+        }
+        let icon_bytes: &[u8] = if healthy { ICON_NORMAL } else { ICON_RED };
+        if let Some(tray) = app.tray_by_id(TRAY_ID) {
+            match tauri::image::Image::from_bytes(icon_bytes) {
+                Ok(img) => {
+                    if let Err(e) = tray.set_icon(Some(img)) {
+                        tracing::error!("更新托盘图标失败：{e}");
+                    }
+                }
+                Err(e) => tracing::error!("解析托盘图标失败：{e}"),
+            }
+        }
+    });
+}
+
+/// 「一键修复」：spawn daemon 同目录 guard-hook.exe install（原子注入 + 回读校验），
+/// 成功后复查回绿。失败不 panic，只弹中文消息框 + 日志。
+fn repair_protect(app: &AppHandle) {
+    let daemon_exe = std::env::current_exe().unwrap_or_default();
+    let config = match protect::config_path() {
+        Some(c) => c,
+        None => {
+            message_box(
+                "KimiCodeGuard 一键修复",
+                "无法确定 Kimi Code 配置路径（KIMI_CODE_HOME / USERPROFILE 缺失）。",
+                Icon::Error,
+            );
+            return;
+        }
+    };
+    match protect::repair(&daemon_exe, &config) {
+        protect::RepairOutcome::Ok => {
+            let fresh = protect::check(&config);
+            update_protect(app, fresh.clone(), Some(config.clone()));
+            if fresh.is_healthy() {
+                message_box(
+                    "KimiCodeGuard 一键修复",
+                    "修复成功，防护已恢复。",
+                    Icon::Info,
+                );
+            } else {
+                message_box(
+                    "KimiCodeGuard 一键修复",
+                    &format!("修复命令已执行，但复查仍未通过：{}", fresh.detail(&config)),
+                    Icon::Error,
+                );
+            }
+        }
+        protect::RepairOutcome::NonZero(code) => message_box(
+            "KimiCodeGuard 一键修复",
+            &format!("修复失败：install 退出码 {code}（详见日志）。"),
+            Icon::Error,
+        ),
+        protect::RepairOutcome::SpawnFailed(e) => message_box(
+            "KimiCodeGuard 一键修复",
+            &format!("修复失败：{e}"),
+            Icon::Error,
+        ),
+    }
 }
 
 /// 「回溯历史会话」（M4 审计轨 B）：提交回溯任务 → 另起线程等回复 → 中文摘要消息框。

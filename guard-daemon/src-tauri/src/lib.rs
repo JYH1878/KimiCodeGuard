@@ -5,5 +5,6 @@ pub mod ask_pipe;
 pub mod audit;
 #[cfg(windows)]
 pub mod events_pipe;
+pub mod protect;
 pub mod sessions;
 pub mod wire;
