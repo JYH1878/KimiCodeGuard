@@ -24,7 +24,7 @@
 
 ### 发布链路（M5）
 
-- NSIS 安装器（当前用户免管理员，简体中文）：安装注入 hooks、卸载逐字节还原 config.toml；guard-hook.exe 随包分发。
+- NSIS 安装器（当前用户免管理员，简体中文）：安装注入 hooks、卸载还原 config.toml（装前备份逐字节还原）；guard-hook.exe 随包分发；重装/修复自动去重「裸块」（Kimi 重写配置剥注释的实测场景）。
 - 自保护巡检：daemon 启动时 + 每 5 分钟检查注入块与 hook 程序存在性，失效时托盘显红 + 「一键修复」。
 - GitHub Actions CI 门禁：根与 daemon 双 workspace 的 fmt / clippy / 全量测试 + 前端 lint / build。
 - 文档：`docs/THREAT_MODEL.md` 威胁模型、`docs/兼容矩阵.md` 四象限实测矩阵。

@@ -43,9 +43,10 @@
 | T8 | 规则被路径花招绕过（8.3 短名、junction、UNC、命令链、反斜杠 `\rm`、大小写） | 规范化（~ 展开/斜杠统一/canonicalize 兜底）+ tests/bypass/ 对抗集 57 条，规则改动必须全绿 | 不变量门禁；`rules.rs` + `tests/bypass/` |
 | T9 | 审计记录被事后篡改却无从发现 | append-only + sha256 哈希链（prev_hash 链接），托盘「校验审计链」报红含行号；导出 JSONL 供独立重算 | D7；`audit.rs` |
 | T10 | 安装前的危险操作无记录 | 轨 B：wire.jsonl 回溯解析（幂等增量、行级去重、撕裂末行不消费），同一 audit.db 同一链 | D7；`wire.rs` |
-| T11 | 防护被卸载/破坏后用户不知情 | 自保护巡检（`protect.rs`）：启动 + 每 5 分钟查 marker 与 hook exe 存在性，缺失 → 托盘显红 + 「一键修复」（重跑原子注入） | M5；`protect.rs` / `tray.rs` |
+| T11 | 防护被卸载/破坏后用户不知情 | 自保护巡检（`protect.rs`）：启动 + 每 5 分钟查注入块与 hook exe 存在性（marker 优先、裸块兜底——Kimi 重写 config 会剥注释，2026-08-15 实测），缺失 → 托盘显红 + 「一键修复」（重跑原子注入） | M5；`protect.rs` / `tray.rs` |
 | T12 | daemon 崩溃/被杀 → ask 无响应 | hook 连不上管道 ~2s 内 fail-safe `exit 2`；事件落 spool 待回收；SessionStart 自动拉起 daemon | D2；`pipe.rs` / `report.rs` / `lifecycle` |
 | T13 | NSIS 注入失败 → 装完无防护 | installer hooks 失败不阻塞但写 `installer.log`；daemon 巡检下一轮发现显红，用户点「一键修复」兜底 | M5 止损设计；`installer.nsis` + `protect.rs` |
+| T14 | Kimi 重写 config.toml 剥掉注释 → marker 丢失 → install/修复重复注入同一事件双 hook | install 去重覆盖裸块（command 含 guard-hook.exe 的无 marker 段）；uninstall 不动裸块；NSIS 卸载优先还原装前备份，字节级一致 | 2026-08-15 实测（HANDOFF 坑 21）；`main.rs` remove_orphan_blocks / `installer.nsis` |
 
 ## 4. 明确不防什么（写实话）
 

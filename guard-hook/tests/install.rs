@@ -94,6 +94,38 @@ fn uninstall_restores_byte_for_byte() {
 }
 
 #[test]
+fn install_over_orphan_block_dedupes() {
+    let dir = TempDir::new("kcg-test", "orphan");
+    let config = dir.join("config.toml");
+    // 裸块：marker 被 Kimi 重写剥掉后的注入段（2026-08-15 真机实测形态）
+    let original = "model = \"kimi\"\n\n[[hooks]]\nevent = \"PreToolUse\"\ncommand = \"\\\"D:\\\\old\\\\guard-hook.exe\\\" hook\"\ntimeout = 75\n";
+    fs::write(&config, original).unwrap();
+
+    let ok = guard_hook()
+        .args(["install", "--config"])
+        .arg(&config)
+        .status()
+        .unwrap();
+    assert!(ok.success());
+    let content = fs::read_to_string(&config).unwrap();
+    // 裸块被去重：PreToolUse 只剩一份（指向新 exe），marker 块注入
+    assert_eq!(content.matches("event = \"PreToolUse\"").count(), 1);
+    assert_eq!(content.matches("# BEGIN KimiCodeGuard").count(), 1);
+    assert!(!content.contains("D:\\\\old\\\\guard-hook.exe"));
+    let parsed: toml::Value = toml::from_str(&content).unwrap();
+    assert_eq!(parsed["hooks"].as_array().unwrap().len(), 3);
+
+    // uninstall 移除 marker 块后剩原首行（裸块已在 install 时去重）
+    let ok = guard_hook()
+        .args(["uninstall", "--config"])
+        .arg(&config)
+        .status()
+        .unwrap();
+    assert!(ok.success());
+    assert_eq!(fs::read_to_string(&config).unwrap(), "model = \"kimi\"\n");
+}
+
+#[test]
 fn install_without_dump_dir_injects_plain_hook_command() {
     let dir = TempDir::new("kcg-test", "nodump");
     let config = dir.join("config.toml");

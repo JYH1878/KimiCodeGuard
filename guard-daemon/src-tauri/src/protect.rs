@@ -1,7 +1,8 @@
 //! 自保护巡检 v1（M5 任务 3）：daemon 启动时 + 周期检查防护是否完好。
 //!
 //! 两项检查（任一缺失 = 防护失效 → 托盘显红「防护失效」+ 菜单「一键修复」）：
-//! 1. `~/.kimi-code/config.toml` 含注入 marker（# BEGIN KimiCodeGuard … # END KimiCodeGuard）；
+//! 1. `~/.kimi-code/config.toml` 含注入块（marker 块优先；marker 被剥时退到裸块检测，
+//!    见 extract_hook_exe_orphan——2026-08-15 实测 Kimi Code 重写 config 会丢注释）；
 //! 2. 注入块里 PreToolUse hook 的 command 中的 hook exe 路径存在。
 //!
 //! 一键修复 = spawn daemon 自身同目录的 `guard-hook.exe install --config <config> --daemon-path <daemon exe>`
@@ -102,12 +103,14 @@ pub fn config_path() -> Option<PathBuf> {
 }
 
 /// 巡检两项检查。任何 IO 错误收敛为对应状态，不 panic。
+/// marker 块优先；marker 缺失时退到裸块检测（防误报红）。
 pub fn check(config: &Path) -> ProtectStatus {
     let content = match std::fs::read_to_string(config) {
         Ok(c) => c,
         Err(_) => return ProtectStatus::ConfigMissing,
     };
-    let Some(hook) = extract_hook_exe(&content) else {
+    let hook = extract_hook_exe(&content).or_else(|| extract_hook_exe_orphan(&content));
+    let Some(hook) = hook else {
         return ProtectStatus::MarkerMissing;
     };
     if Path::new(&hook).is_file() {
@@ -115,6 +118,39 @@ pub fn check(config: &Path) -> ProtectStatus {
     } else {
         ProtectStatus::HookExeMissing { path: hook }
     }
+}
+
+/// 裸块检测：全文（不依赖 marker）找引用 guard-hook.exe 的 PreToolUse hook，
+/// 返回其 exe 路径。背景（2026-08-15 实测）：Kimi Code 重写 config.toml 会丢弃注释，
+/// marker 被剥后注入的 hooks 段以裸块形态留存——裸块同样是有效防护，只认 marker
+/// 会误报红。第三方 PreToolUse hook（command 不含 guard-hook.exe）不算。
+pub fn extract_hook_exe_orphan(content: &str) -> Option<String> {
+    let mut event: Option<String> = None;
+    for line in content.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            event = None; // 任何新表头都重置事件上下文
+            continue;
+        }
+        if let Some(v) = line.strip_prefix("event") {
+            event = v.split_once('=').and_then(|(_, v)| unquote(v.trim()));
+            continue;
+        }
+        if let Some(v) = line.strip_prefix("command") {
+            if event.as_deref() == Some("PreToolUse") {
+                let Some((_, raw)) = v.split_once('=') else {
+                    continue;
+                };
+                let Some(cmd) = unquote(raw.trim()) else {
+                    continue;
+                };
+                if cmd.contains(HOOK_EXE_NAME) {
+                    return first_quoted_token(&cmd);
+                }
+            }
+        }
+    }
+    None
 }
 
 /// 从 config 内容里提取注入块 PreToolUse command 指向的 hook exe 路径。
@@ -393,6 +429,65 @@ mod tests {
         let config = dir.path().join("config.toml");
         std::fs::write(&config, "# BEGIN KimiCodeGuard\n# END KimiCodeGuard\n").unwrap();
         assert_eq!(check(&config), ProtectStatus::MarkerMissing);
+    }
+
+    // ---------- 裸块容错（2026-08-15 实测：Kimi 重写 config 丢注释，marker 被剥） ----------
+
+    /// 与真机裸块同构：marker 被剥后的注入段（无 BEGIN/END 注释）
+    fn orphan_block(exe: &Path) -> String {
+        let e = exe.display().to_string().replace('\\', "\\\\");
+        format!(
+            "model = \"kimi\"\n\n[[hooks]]\nevent = \"PreToolUse\"\ncommand = \"\\\"{e}\\\" hook\"\ntimeout = 75\n"
+        )
+    }
+
+    #[test]
+    fn orphan_block_healthy_when_exe_exists() {
+        let dir = TempDir::new("orphan-healthy");
+        let hook = dir.path().join("guard-hook.exe");
+        std::fs::write(&hook, b"fake").unwrap();
+        let config = dir.path().join("config.toml");
+        std::fs::write(&config, orphan_block(&hook)).unwrap();
+        assert_eq!(check(&config), ProtectStatus::Healthy);
+    }
+
+    #[test]
+    fn orphan_block_exe_missing_is_reported() {
+        let dir = TempDir::new("orphan-exe-missing");
+        let config = dir.path().join("config.toml");
+        let hook = dir.path().join("gone").join("guard-hook.exe");
+        std::fs::write(&config, orphan_block(&hook)).unwrap();
+        assert_eq!(
+            check(&config),
+            ProtectStatus::HookExeMissing {
+                path: hook.display().to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn third_party_pretool_hook_does_not_count() {
+        let dir = TempDir::new("third-party");
+        let config = dir.path().join("config.toml");
+        std::fs::write(
+            &config,
+            "[[hooks]]\nevent = \"PreToolUse\"\ncommand = \"\\\"C:\\\\tools\\\\other.exe\\\" run\"\n",
+        )
+        .unwrap();
+        assert_eq!(check(&config), ProtectStatus::MarkerMissing);
+    }
+
+    #[test]
+    fn marker_wins_over_orphan() {
+        let dir = TempDir::new("marker-wins");
+        let marker_hook = dir.path().join("guard-hook.exe");
+        std::fs::write(&marker_hook, b"fake").unwrap();
+        let orphan_hook = dir.path().join("gone").join("guard-hook.exe");
+        let config = dir.path().join("config.toml");
+        let content = format!("{}{}", test_block(&marker_hook), orphan_block(&orphan_hook));
+        std::fs::write(&config, content).unwrap();
+        // marker 块指向存在的 exe → 绿（不受裸块坏路径影响）
+        assert_eq!(check(&config), ProtectStatus::Healthy);
     }
 
     // ---------- extract_hook_exe 解析 ----------

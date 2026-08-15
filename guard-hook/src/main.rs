@@ -302,6 +302,54 @@ fn append_block(content: &str, block: &str) -> String {
     out
 }
 
+/// 删除「裸块」：没有 marker 但 command 引用 guard-hook.exe 的 [[hooks]] 段。
+/// 背景（2026-08-15 实测）：Kimi Code 重写 config.toml 会丢弃注释——注入块的
+/// BEGIN/END marker 被剥掉后，hooks 段以裸块形态留在配置里。install 若只按 marker
+/// 去重，会再追加一份，同一事件挂两个 hook（双弹窗/双上报）。
+/// 仅 install 在 remove_block 之后调用本函数去重；uninstall 不调用——逐字节还原
+/// 义务只覆盖 marker 块，裸块属于用户配置现状，不动。
+/// 逐行保留原始字节（split_inclusive），无裸块时内容逐字节不变（含 CRLF）。
+fn remove_orphan_blocks(content: &str) -> String {
+    let lines: Vec<&str> = content.split_inclusive('\n').collect();
+    let mut keep = vec![true; lines.len()];
+    let mut i = 0;
+    while i < lines.len() {
+        if lines[i].trim() == "[[hooks]]" {
+            // 段范围：连续非空行，到空行或下一个表头（[ 开头的行）为止
+            let mut end = i + 1;
+            while end < lines.len()
+                && !lines[end].trim().is_empty()
+                && !lines[end].trim_start().starts_with('[')
+            {
+                end += 1;
+            }
+            let is_ours = lines[i..end].iter().any(|l| {
+                let t = l.trim();
+                t.starts_with("command") && t.contains("guard-hook.exe")
+            });
+            if is_ours {
+                for item in keep.iter_mut().take(end).skip(i) {
+                    *item = false;
+                }
+                // 连同段前一个空行一起删（我们当初 append 的前导换行形态）
+                if i > 0 && keep[i - 1] && lines[i - 1].trim().is_empty() {
+                    keep[i - 1] = false;
+                }
+            }
+            i = end;
+        } else {
+            i += 1;
+        }
+    }
+    let mut out = String::with_capacity(content.len());
+    for (idx, line) in lines.iter().enumerate() {
+        if keep[idx] {
+            out.push_str(line);
+        }
+    }
+    out
+}
+
 // ---------- 原子写 ----------
 
 /// 同目录 tmp + fsync + rename（参考 numbat install.go 范式）。
@@ -361,7 +409,7 @@ fn run_install(args: &[String]) -> ExitCode {
 
     let base = original.as_deref().unwrap_or("");
     let new_content = append_block(
-        &remove_block(base),
+        &remove_orphan_blocks(&remove_block(base)),
         &render_block(&exe, dump_dir.as_deref(), daemon_path.as_deref()),
     );
 
@@ -591,6 +639,51 @@ mod tests {
         let once = append_block(&remove_block(src), &block);
         let twice = append_block(&remove_block(&once), &block);
         assert_eq!(once, twice);
+    }
+
+    // ---------- 裸块去重（2026-08-15 实测：Kimi 重写 config 丢注释，marker 被剥） ----------
+
+    /// 与真机裸块同构：marker 被剥后的三条注入段（dev 路径形态）
+    fn orphan_config() -> String {
+        "model = \"kimi\"\n\n[[hooks]]\nevent = \"PreToolUse\"\n\
+         command = \"\\\"D:\\\\Dev\\\\guard-hook.exe\\\" hook\"\ntimeout = 75\n\n\
+         [[hooks]]\nevent = \"SessionStart\"\n\
+         command = \"\\\"D:\\\\Dev\\\\guard-hook.exe\\\" lifecycle --event SessionStart\"\ntimeout = 5\n"
+            .to_string()
+    }
+
+    #[test]
+    fn orphan_blocks_removed_third_party_kept() {
+        let third_party = "\n[[hooks]]\nevent = \"PreToolUse\"\ncommand = \"\\\"C:\\\\tools\\\\other.exe\\\" hook\"\ntimeout = 10\n";
+        let src = format!("{}{}", orphan_config(), third_party);
+        let out = remove_orphan_blocks(&src);
+        assert_eq!(out, format!("model = \"kimi\"\n{third_party}"));
+    }
+
+    #[test]
+    fn orphan_removal_noop_is_byte_identical() {
+        for src in [
+            "model = \"k\"\n",
+            "model = \"k\"",
+            "",
+            "model = \"k\"\r\n\r\n[permission]\r\n",
+            "[[hooks]]\nevent = \"PreToolUse\"\ncommand = \"\\\"C:\\\\x\\\\other.exe\\\" run\"\n",
+        ] {
+            assert_eq!(remove_orphan_blocks(src), src, "changed: {src:?}");
+        }
+    }
+
+    #[test]
+    fn orphan_then_inject_has_single_pretooluse() {
+        let src = orphan_config();
+        let block = render_block(Path::new("C:/new/guard-hook.exe"), None, None);
+        let out = append_block(&remove_orphan_blocks(&remove_block(&src)), &block);
+        assert_eq!(out.matches("event = \"PreToolUse\"").count(), 1);
+        assert_eq!(out.matches("# BEGIN KimiCodeGuard").count(), 1);
+        assert!(out.contains("C:/new/guard-hook.exe"));
+        assert!(!out.contains("D:\\\\Dev\\\\guard-hook.exe"));
+        // 第三方段不被误伤（本用例裸块独占，输出 = 原首行 + 新块）
+        assert!(out.starts_with("model = \"kimi\"\n"));
     }
 
     #[test]
