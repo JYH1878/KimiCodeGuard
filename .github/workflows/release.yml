@@ -87,13 +87,13 @@ jobs:
             Write-Host "无现存 Release（404 属预期），直接创建"
           }
 
-          $body = @{
+          $body = ConvertTo-Json -InputObject @{
             tag_name   = $tag
             name       = "KimiCodeGuard for Windows $tag"
             body       = "见下方 Assets：NSIS 安装器（当前用户安装、免管理员、简体中文）+ guard-hook 便携 zip。安装器未签名，SmartScreen 提示属预期。"
             draft      = $false
             prerelease = $false
-          } | ConvertTo-Json
+          }
           $release = Invoke-RestMethod -Method Post -Uri "https://api.github.com/repos/$repo/releases" -Headers $headers -Body $body
           Write-Host "Release 已创建: id=$($release.id) tag=$($release.tag_name) draft=$($release.draft)"
 
