@@ -8,6 +8,7 @@ Kimi Code 的 Windows 安全卫士：托盘常驻，通过 PreToolUse hook 拦�
 
 - **危险命令拦截**：内置规则 deny 高危操作（`rm -rf`、凭据文件读写等），git 强制推送弹窗问人（55 秒无响应自动拒绝）；Kimi Code 双引擎（v1/v2）通吃。
 - **双轨审计**：轨 A = hook 实时事件；轨 B = wire.jsonl 回溯安装前历史。统一进 SQLite 哈希链——改动任意一条历史记录，「校验审计链」立即报红并定位行号。
+- **中文审计面板**：托盘「打开审计面板」一页看全——统计卡、14 天柱、高频工具 Top5、事件流（deny 红 / ask 黄 / allow 灰）、筛选分页、点行展开完整 payload，新事件实时上屏。
 - **托盘常驻**：随 Kimi Code 会话自动启停、空载自退；校验审计链 / 导出审计 JSONL / 回溯历史会话 / 开机自启 一键直达。
 - **fail-safe 设计**：hook 崩溃、daemon 掉线、弹窗超时一律按拒绝处理，绝不静默放行。
 
@@ -57,11 +58,12 @@ KimiCodeGuard 已拦截（规则 rm-force）：递归强制删除命令（rm -rf
 - M3（2026-08-14 验收）：审计轨 A 落库 —— hook 事件上报 → 事件管道 → SQLite + hash chain（spool 兜底，daemon 不在时零丢失）；daemon 随 Kimi Code 会话自动启停（SessionStart 拉起、空载 5 分钟自退，可选开机自启）；托盘「校验审计链」（篡改报红定位行号）与「导出审计 JSONL」。
 - M4（2026-08-14 验收）：审计轨 B —— wire.jsonl 回溯解析（v1/v2 双引擎记录通吃，撕裂行/坏行/未来类型容错），安装前历史以 `wire.*` 事件幂等导入同一审计库（行级去重 + 文件游标增量）；daemon 启动自动回溯 + 托盘「回溯历史会话」手动重扫。
 - M5（2026-08-15）：v0.1.0 发布链路 —— NSIS 安装器（注入/还原 hooks）、自保护巡检（失效显红 + 一键修复）、CI 门禁、威胁模型与更新日志入库。
+- M6（2026-08-15 验收，未发版）：中文审计面板 —— 统计卡 / 14 天柱 / Top5 / 筛选分页 / 点行展开详情 / 新事件实时上屏；修复两处审计可靠性缺陷（偶发丢事件、自动刷新失效）。
 
 ## 组成
 
 - `guard-hook/` — Rust 单文件 exe：PreToolUse hook 薄 shim（stdin → 规则判定 → 事件上报 → exit 0/2），会话生命周期上报（lifecycle），内置 config 原子注入器。
-- `guard-daemon/` — Tauri 2 托盘（独立 workspace）：ask 命名管道服务端 + 弹窗 UI、事件管道服务端 + SQLite/hash chain 审计库、wire.jsonl 回溯解析器（轨 B）、会话跟踪启停调度、托盘菜单（状态 / 校验审计链 / 导出审计 JSONL / 回溯历史会话 / 开机自启 / 退出）。
+- `guard-daemon/` — Tauri 2 托盘（独立 workspace）：ask 命名管道服务端 + 弹窗 UI、事件管道服务端 + SQLite/hash chain 审计库、wire.jsonl 回溯解析器（轨 B）、审计面板（只读查询 + 实时推送）、会话跟踪启停调度、托盘菜单（状态 / 打开审计面板 / 校验审计链 / 导出审计 JSONL / 回溯历史会话 / 开机自启 / 一键修复 / 退出）。
 - `fixtures/` — 真实 hook payload（已脱敏）+ wire.jsonl 合成样本，解析器与规则的唯一数据地基。
 - `docs/` — 威胁模型（THREAT_MODEL.md）、兼容矩阵（实测记录）；项目书待建。
 

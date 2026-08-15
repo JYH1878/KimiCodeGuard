@@ -3,6 +3,19 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### 审计面板（M6）
+
+- 新增中文审计面板（托盘「打开审计面板」）：统计卡（今日拦截 / 弹窗确认 / 放行 / 事件总数）、14 天柱状图、高频工具 Top5、事件流表格（deny 红 / ask 黄 / allow 灰）、判定 / 事件 / 工具 / 关键字筛选、游标分页、点行展开完整 payload。
+- 新事件实时上屏：daemon 落库后即推送面板，无需手动刷新。
+- 面板对审计库为只读连接（含写拒单测），不影响哈希链与写入路径。
+
+### 修复（M6）
+
+- 修复事件管道偶发丢审计事件：fire-and-forget 客户端「连上即断」时，listener 误把 ERROR_NO_DATA 当失败关闭句柄，缓冲数据随之销毁。
+- 修复审计面板自动刷新静默失效：capabilities 未列 panel 窗口导致前端事件监听无权限、无任何报错。
+
 ## [0.1.0] - 2026-08-15
 
 首个公开发布。给 Kimi Code CLI（Windows）装上安全门：托盘常驻，PreToolUse 拦截危险操作，
