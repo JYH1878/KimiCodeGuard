@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "KimiCodeGuard 默认能力集（仅 core：事件监听 + 命令调用）",
-  "windows": ["ask"],
+  "description": "KimiCodeGuard 默认能力集（仅 core：事件监听 + 命令调用）。M6 起含 panel：审计面板依赖 core:event 接收 audit-event 实时推送，漏了它 listen 静默失败、面板自动刷新不工作（坑 24）。",
+  "windows": ["ask", "panel"],
   "permissions": ["core:default"]
 }
