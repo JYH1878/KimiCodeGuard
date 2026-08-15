@@ -22,6 +22,18 @@
         "resizable": false,
         "visible": false,
         "backgroundColor": "#1a1b26"
+      },
+      {
+        "label": "panel",
+        "title": "KimiCodeGuard 审计面板",
+        "width": 960,
+        "height": 640,
+        "minWidth": 720,
+        "minHeight": 480,
+        "url": "panel.html",
+        "resizable": true,
+        "visible": false,
+        "backgroundColor": "#1a1b26"
       }
     ]
   },

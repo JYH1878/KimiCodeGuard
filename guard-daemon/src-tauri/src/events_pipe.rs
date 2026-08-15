@@ -11,7 +11,8 @@
 //! - 全程无 panic：每步错误收敛为日志；审计库打不开时继续收事件（只丢弃+日志），
 //!   绝不拖垮 ask 防护。
 //! - sink：每条解析成功的事件（含 spool 回收的）都会克隆一份发过去——
-//!   会话跟踪（任务 4，空载自退）据此工作，与落库解耦。
+//!   会话跟踪（任务 4，空载自退）据此工作，与落库解耦。M6 起负载改为
+//!   `SunkEvent { id, event }`：面板实时推送需要行 id（游标分页键）。
 //!
 //! M4（审计轨 B）：worker 同时收 `WorkItem::Backfill` 回溯任务（wire.jsonl 增量
 //! 幂等导入 audit.db，见 `run_backfill`）。单 worker 串行 ⇒ 「唯一写者」不变量
@@ -27,7 +28,7 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use windows_sys::Win32::Foundation::{
-    CloseHandle, GetLastError, ERROR_PIPE_CONNECTED, INVALID_HANDLE_VALUE,
+    CloseHandle, GetLastError, ERROR_NO_DATA, ERROR_PIPE_CONNECTED, INVALID_HANDLE_VALUE,
 };
 use windows_sys::Win32::Storage::FileSystem::PIPE_ACCESS_INBOUND;
 use windows_sys::Win32::System::Pipes::{
@@ -75,10 +76,18 @@ pub fn parse_event(line: &str) -> Option<AuditEvent> {
     })
 }
 
+/// sink 负载：一条已入库的事件及其行 id。
+/// id = None 表示入库失败——会话跟踪仍要用事件驱动启停；面板实时推送应跳过
+/// （库里没有这行，插进面板与库不一致）。
+pub struct SunkEvent {
+    pub id: Option<i64>,
+    pub event: AuditEvent,
+}
+
 /// 回收 spool：逐行解析入库，返回成功入库条数。
 /// 文件不存在 = 正常（0 条）；非法行记日志丢弃；入库失败的行重写回 spool（不删文件）；
 /// 全部成功则删除 spool 文件。
-pub fn recover_spool(spool_path: &Path, db: &AuditDb, sink: Option<&Sender<AuditEvent>>) -> usize {
+pub fn recover_spool(spool_path: &Path, db: &AuditDb, sink: Option<&Sender<SunkEvent>>) -> usize {
     let Ok(content) = std::fs::read_to_string(spool_path) else {
         return 0; // 不存在（或读失败按无处理）：没有可回收的
     };
@@ -90,10 +99,13 @@ pub fn recover_spool(spool_path: &Path, db: &AuditDb, sink: Option<&Sender<Audit
         }
         match parse_event(line) {
             Some(ev) => match db.append(&ev) {
-                Ok(_) => {
+                Ok(id) => {
                     kept += 1;
                     if let Some(s) = sink {
-                        let _ = s.send(ev);
+                        let _ = s.send(SunkEvent {
+                            id: Some(id),
+                            event: ev,
+                        });
                     }
                 }
                 Err(e) => {
@@ -205,7 +217,7 @@ pub fn start(
     pipe_name: &str,
     db_path: &Path,
     spool_path: &Path,
-    sink: Option<Sender<AuditEvent>>,
+    sink: Option<Sender<SunkEvent>>,
 ) -> io::Result<Server> {
     let (work_tx, work_rx) = mpsc::channel::<WorkItem>();
     let (ready_tx, ready_rx) = mpsc::channel::<io::Result<()>>();
@@ -313,9 +325,15 @@ fn listener_loop(
             tracing::info!("events 管道监听中：{pipe_name}");
         }
 
-        // SAFETY: 句柄有效；阻塞等客户端连接。ERROR_PIPE_CONNECTED = 客户端已连上，按成功处理。
+        // SAFETY: 句柄有效；阻塞等客户端连接。ERROR_PIPE_CONNECTED = 客户端已连上；
+        // ERROR_NO_DATA = 客户端连上后已在 ConnectNamedPipe 返回前断开（fire-and-forget
+        // 高频形态）。两种情况数据都可能已在管道缓冲里，一律按已连接处理交给 worker 读——
+        // 关句柄会连同缓冲数据一起丢掉（M6 定位的偶发丢事件根因）。
         let connected = unsafe { ConnectNamedPipe(handle, std::ptr::null_mut()) };
-        let ok = connected != 0 || unsafe { GetLastError() } == ERROR_PIPE_CONNECTED;
+        let ok = connected != 0 || {
+            let e = unsafe { GetLastError() };
+            e == ERROR_PIPE_CONNECTED || e == ERROR_NO_DATA
+        };
         if !ok {
             let err = io::Error::last_os_error();
             tracing::warn!("等待 events 管道连接失败：{err}");
@@ -343,7 +361,7 @@ fn worker_loop(
     work_rx: &Receiver<WorkItem>,
     db_path: &Path,
     spool_path: &Path,
-    sink: Option<Sender<AuditEvent>>,
+    sink: Option<Sender<SunkEvent>>,
     ready_tx: &Sender<()>,
     shutdown: &ArcBool,
 ) {
@@ -432,7 +450,7 @@ fn run_backfill(root: &Path, db: Option<&AuditDb>) -> BackfillSummary {
 }
 
 /// 处理单条连接：读一行 → 解析 → 入库 + 转 sink。空行（shutdown 探针）静默跳过。
-fn serve_one(file: &mut File, db: Option<&AuditDb>, sink: Option<&Sender<AuditEvent>>) {
+fn serve_one(file: &mut File, db: Option<&AuditDb>, sink: Option<&Sender<SunkEvent>>) {
     let Some(read_result) = read_line_with_timeout(file, READ_TIMEOUT) else {
         tracing::warn!("读取事件超时（{READ_TIMEOUT:?}），丢弃该连接");
         return;
@@ -452,15 +470,17 @@ fn serve_one(file: &mut File, db: Option<&AuditDb>, sink: Option<&Sender<AuditEv
         tracing::warn!("事件 JSON 非法（丢弃）：{preview}");
         return;
     };
+    let mut id = None;
     if let Some(db) = db {
-        if let Err(e) = db.append(&event) {
-            tracing::error!(event = %event.event, "事件入库失败：{e}");
+        match db.append(&event) {
+            Ok(row_id) => id = Some(row_id),
+            Err(e) => tracing::error!(event = %event.event, "事件入库失败：{e}"),
         }
     } else {
         tracing::warn!(event = %event.event, "审计库不可用，事件丢弃");
     }
     if let Some(sink) = sink {
-        let _ = sink.send(event);
+        let _ = sink.send(SunkEvent { id, event });
     }
 }
 

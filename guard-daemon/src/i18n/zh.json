@@ -13,5 +13,50 @@
     "allow": "允许",
     "deny": "拒绝",
     "waiting": "等待请求…"
+  },
+  "panel": {
+    "stats": {
+      "todayDenied": "今日拦截",
+      "todayAskAllowed": "今日弹窗确认",
+      "todayAllowed": "今日放行",
+      "totalEvents": "事件总数",
+      "weeklyTitle": "近 14 天事件",
+      "weeklyToday": "今日",
+      "topTools": "高频工具 Top5",
+      "noData": "暂无数据"
+    },
+    "filters": {
+      "decision": "判定",
+      "event": "类型",
+      "keyword": "关键字",
+      "query": "查询",
+      "autoRefresh": "自动刷新",
+      "all": "全部",
+      "keywordPlaceholder": "匹配命令与原因…"
+    },
+    "table": {
+      "time": "时间",
+      "event": "事件",
+      "tool": "工具",
+      "decision": "判定",
+      "reason": "原因",
+      "detail": "详情"
+    },
+    "pagination": {
+      "prev": "上一页",
+      "next": "下一页",
+      "page": "第 {{page}} 页",
+      "total": "共 {{count}} 条"
+    },
+    "decision": {
+      "deny": "拒绝",
+      "ask_allow": "弹窗允许",
+      "ask_deny": "弹窗拒绝",
+      "allow": "放行",
+      "none": "—"
+    },
+    "empty": "尚无审计数据",
+    "loading": "加载中…",
+    "dbError": "读取审计库失败：{{error}}"
   }
 }

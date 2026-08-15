@@ -175,9 +175,33 @@ pub fn start_events_server(app: &AppHandle) -> Option<Sender<events_pipe::WorkIt
             // Server 在此线程持有：线程退出即 drop（置 shutdown 标志）；不调用其方法
             let _server = server;
             let mut tracker = sessions::SessionTracker::new();
+            // M6：面板窗口未就绪时 emit 失败属常态，只 debug! 一次，不许 warn/error 刷屏
+            let mut panel_unavailable_logged = false;
             loop {
                 match sink_rx.recv_timeout(TRACK_TICK) {
-                    Ok(ev) => tracker.on_event(&ev.event, &ev.session_id, ev.ts),
+                    Ok(ev) => {
+                        tracker.on_event(&ev.event.event, &ev.event.session_id, ev.event.ts);
+                        // 面板实时推送：只推摘要（payload 全文由面板展开时调 panel_row 取）。
+                        // 入库失败（id=None）的事件不推——库里没有这行，面板展示会与库不一致。
+                        if let Some(id) = ev.id {
+                            let summary = serde_json::json!({
+                                "id": id,
+                                "ts": ev.event.ts,
+                                "event": ev.event.event,
+                                "session_id": ev.event.session_id,
+                                "cwd": ev.event.cwd,
+                                "tool_name": ev.event.tool_name,
+                                "decision": ev.event.decision,
+                                "reason": ev.event.reason,
+                            });
+                            if app.emit_to("panel", "audit-event", &summary).is_err()
+                                && !panel_unavailable_logged
+                            {
+                                tracing::debug!("panel 窗口未就绪，audit-event 未投递（常态）");
+                                panel_unavailable_logged = true;
+                            }
+                        }
+                    }
                     Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
                     Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
                         tracing::error!("events sink 通道断开（worker 已退出），跟踪线程结束");

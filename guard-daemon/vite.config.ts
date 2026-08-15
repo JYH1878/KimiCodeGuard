@@ -25,6 +25,7 @@ export default defineConfig({
     rollupOptions: {
       input: {
         ask: fileURLToPath(new URL("./ask.html", import.meta.url)),
+        panel: fileURLToPath(new URL("./panel.html", import.meta.url)),
       },
     },
   },

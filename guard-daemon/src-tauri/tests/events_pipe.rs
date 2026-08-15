@@ -80,7 +80,24 @@ fn wait_count(db_path: &std::path::Path, n: u64) {
         if c >= n {
             return;
         }
-        assert!(Instant::now() < deadline, "等 {n} 行超时（当前 {c} 行）");
+        if Instant::now() >= deadline {
+            let mut buf: Vec<u8> = Vec::new();
+            let _ = db.dump_jsonl(&mut buf);
+            let text = String::from_utf8(buf).unwrap_or_default();
+            let sess: Vec<String> = text
+                .lines()
+                .filter_map(|l| {
+                    serde_json::from_str::<serde_json::Value>(l)
+                        .ok()
+                        .and_then(|v| {
+                            v.get("session_id")
+                                .and_then(|x| x.as_str())
+                                .map(|s| s.to_string())
+                        })
+                })
+                .collect();
+            panic!("等 {n} 行超时（当前 {c} 行）；已入库 session_id: {sess:?}");
+        }
         std::thread::sleep(Duration::from_millis(50));
     }
 }
@@ -178,8 +195,9 @@ fn sink_receives_parsed_events() {
     let ev = rx
         .recv_timeout(Duration::from_secs(5))
         .expect("sink 应收到事件");
-    assert_eq!(ev.event, "PreToolUse");
-    assert_eq!(ev.session_id, "sess-live");
+    assert_eq!(ev.id, Some(1), "sink 负载必须带入库行 id（面板游标分页用）");
+    assert_eq!(ev.event.event, "PreToolUse");
+    assert_eq!(ev.event.session_id, "sess-live");
     wait_count(&db_path, 1);
     server.shutdown();
 }

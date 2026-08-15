@@ -13,5 +13,50 @@
     "allow": "Allow",
     "deny": "Deny",
     "waiting": "Waiting for request…"
+  },
+  "panel": {
+    "stats": {
+      "todayDenied": "Blocked today",
+      "todayAskAllowed": "Ask allowed today",
+      "todayAllowed": "Allowed today",
+      "totalEvents": "Total events",
+      "weeklyTitle": "Last 14 days",
+      "weeklyToday": "Today",
+      "topTools": "Top 5 tools",
+      "noData": "No data"
+    },
+    "filters": {
+      "decision": "Decision",
+      "event": "Type",
+      "keyword": "Keyword",
+      "query": "Query",
+      "autoRefresh": "Auto refresh",
+      "all": "All",
+      "keywordPlaceholder": "Match command & reason…"
+    },
+    "table": {
+      "time": "Time",
+      "event": "Event",
+      "tool": "Tool",
+      "decision": "Decision",
+      "reason": "Reason",
+      "detail": "Detail"
+    },
+    "pagination": {
+      "prev": "Prev",
+      "next": "Next",
+      "page": "Page {{page}}",
+      "total": "{{count}} rows"
+    },
+    "decision": {
+      "deny": "Denied",
+      "ask_allow": "Ask allowed",
+      "ask_deny": "Ask denied",
+      "allow": "Allowed",
+      "none": "—"
+    },
+    "empty": "No audit data yet",
+    "loading": "Loading…",
+    "dbError": "Failed to read audit DB: {{error}}"
   }
 }

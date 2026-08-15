@@ -1,5 +1,5 @@
 //! 托盘图标：常驻。菜单：状态（禁用态文本）、一键修复（防护失效时可用）、校验审计链、
-//! 导出审计 JSONL、回溯历史会话、开机自启（默认关）、退出。
+//! 导出审计 JSONL、回溯历史会话、打开审计面板（M6）、开机自启（默认关）、退出。
 //! 图标为 KimiCodeBar 占位图标（不设计新图标）；自保护巡检异常时换红图标 + 状态显红。
 //! 消息框用 windows-sys MessageBoxW（不为几个弹窗引 tauri-plugin-dialog）。
 
@@ -64,6 +64,8 @@ pub fn setup(
     let verify = MenuItem::with_id(app, "verify-audit", "校验审计链", true, None::<&str>)?;
     let export = MenuItem::with_id(app, "export-audit", "导出审计 JSONL", true, None::<&str>)?;
     let backfill = MenuItem::with_id(app, "backfill-history", "回溯历史会话", true, None::<&str>)?;
+    // M6：审计面板（托盘常开入口；关闭只隐藏，见 main.rs CloseRequested 拦截）
+    let open_panel = MenuItem::with_id(app, "open-panel", "打开审计面板", true, None::<&str>)?;
     // 开机自启：勾选态以系统真实状态为准（默认关，M3 拍板）
     let autostart_on = app.autolaunch().is_enabled().unwrap_or(false);
     let autostart = CheckMenuItem::with_id(
@@ -78,7 +80,14 @@ pub fn setup(
     let menu = Menu::with_items(
         app,
         &[
-            &status, &repair, &verify, &export, &backfill, &autostart, &quit,
+            &status,
+            &repair,
+            &verify,
+            &export,
+            &backfill,
+            &open_panel,
+            &autostart,
+            &quit,
         ],
     )?;
 
@@ -109,6 +118,7 @@ pub fn setup(
             "verify-audit" => verify_audit(),
             "export-audit" => export_audit(),
             "backfill-history" => backfill_history(&backfill_tx),
+            "open-panel" => crate::panel::open_panel(app),
             "autostart" => {
                 let launch = app.autolaunch();
                 let was = launch.is_enabled().unwrap_or(false);

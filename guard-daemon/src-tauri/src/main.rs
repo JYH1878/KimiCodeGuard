@@ -2,6 +2,7 @@
 
 mod daemon;
 mod logging;
+mod panel;
 mod tray;
 
 use tauri::Manager;
@@ -18,7 +19,12 @@ fn main() {
             None,
         ))
         .manage(daemon::PendingStore::default())
-        .invoke_handler(tauri::generate_handler![daemon::ask_respond])
+        .invoke_handler(tauri::generate_handler![
+            daemon::ask_respond,
+            panel::panel_query,
+            panel::panel_stats,
+            panel::panel_row
+        ])
         .setup(|app| {
             // 日志必须最先初始化；失败退回 stderr，不 panic
             logging::init();
@@ -48,6 +54,17 @@ fn main() {
             if let Some(ask_window) = app.get_webview_window("ask") {
                 let window = ask_window.clone();
                 ask_window.on_window_event(move |event| {
+                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                        api.prevent_close();
+                        let _ = window.hide();
+                    }
+                });
+            }
+
+            // 面板窗口点关闭只隐藏不销毁（照 ask 窗口模式；托盘可再开，退出走托盘「退出」）
+            if let Some(panel_window) = app.get_webview_window("panel") {
+                let window = panel_window.clone();
+                panel_window.on_window_event(move |event| {
                     if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                         api.prevent_close();
                         let _ = window.hide();
