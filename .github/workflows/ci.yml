@@ -1,0 +1,69 @@
+# CI 门禁（照 参考/KimiCodeBar-Windows-main/.github/workflows/ci.yml 改）
+# 覆盖两个独立 workspace：根（guard-hook，含 fixtures/bypass 对抗集）与 guard-daemon/src-tauri。
+# 根 cargo 不覆盖 daemon（daemon 是独立 workspace，见 guard-daemon/src-tauri/Cargo.toml [workspace] 段）。
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: guard-daemon/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      # 根 workspace 与 guard-daemon/src-tauri 独立 workspace 两个都缓存
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            guard-daemon/src-tauri
+
+      # ---------- 根 workspace：guard-hook ----------
+
+      - name: Rust 格式检查（根）
+        run: cargo fmt --check
+
+      - name: Rust Clippy（根）
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: Rust 测试（根，含 fixtures 真实 payload 回归 + bypass 绕过对抗集）
+        run: cargo test --locked
+
+      # ---------- guard-daemon：独立 workspace ----------
+
+      - name: 安装前端依赖
+        working-directory: guard-daemon
+        run: npm ci
+
+      - name: ESLint（前端）
+        working-directory: guard-daemon
+        run: npm run lint
+
+      - name: 前端构建（tsc 类型检查 + vite build）
+        working-directory: guard-daemon
+        run: npm run build
+
+      - name: Rust 格式检查（daemon）
+        working-directory: guard-daemon/src-tauri
+        run: cargo fmt --check
+
+      - name: Rust Clippy（daemon）
+        working-directory: guard-daemon/src-tauri
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: Rust 测试（daemon）
+        working-directory: guard-daemon/src-tauri
+        run: cargo test --locked
