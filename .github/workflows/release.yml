@@ -1,0 +1,66 @@
+# Release 流水线（照 参考/KimiCodeBar-Windows-main/.github/workflows/release.yml 改）
+# tag v* 触发：tauri-action 建草稿 Release 并传 NSIS 安装器；
+# 再把 guard-hook.exe 便携 zip 追加进同一草稿。草稿由人工核对正文后发布（REST API）。
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: guard-daemon/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            guard-daemon/src-tauri
+
+      # NSIS 安装包装两个 exe：guard-hook.exe 是 bundle resource（tauri.conf.json resources
+      # 指向 ../../target/release/guard-hook.exe），必须先构建根 release 再构建 daemon。
+      - name: 构建 guard-hook（根 release）
+        run: cargo build --release --locked
+
+      - name: 安装前端依赖
+        working-directory: guard-daemon
+        run: npm ci
+
+      # 构建 NSIS 安装包并上传到同名 GitHub Release（草稿）。
+      # guard-daemon 的 beforeBuildCommand 会自动执行 npm run build。
+      - name: 构建并发布 NSIS（草稿）
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: guard-daemon
+          tagName: v__VERSION__
+          releaseName: "KimiCodeGuard for Windows v__VERSION__"
+          releaseBody: "见下方 Assets：NSIS 安装器（当前用户安装、免管理员、简体中文）+ guard-hook 便携 zip。安装器未签名，SmartScreen 提示属预期。"
+          releaseDraft: true
+          prerelease: false
+
+      # 便携版：guard-hook.exe 单文件（只要命令行拦截、不要托盘的场景）
+      - name: 打包 guard-hook 便携 zip
+        shell: pwsh
+        run: |
+          $ver = (Get-Content guard-hook/Cargo.toml | Select-String '^version = "(.+)"').Matches[0].Groups[1].Value
+          Compress-Archive -Path "target/release/guard-hook.exe" -DestinationPath "target/release/KimiCodeGuard_${ver}_guard-hook-portable.zip" -Force
+
+      - name: 上传便携 zip 到同一 Release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: target/release/KimiCodeGuard_*_guard-hook-portable.zip
