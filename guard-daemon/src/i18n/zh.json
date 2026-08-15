@@ -3,7 +3,9 @@
     "title": "安全确认",
     "subtitle": "Kimi Code 请求执行高风险操作",
     "rule": {
-      "git-force-push": "git 强制推送，可能覆盖远端历史"
+      "git-force-push": "git 强制推送，可能覆盖远端历史",
+      "git-destroy": "git 销毁性操作，可能丢失提交历史或未提交改动",
+      "shell-obfuscation": "经混淆或编码包装的命令，内层内容无法人工审查"
     },
     "ruleUnknown": "未知规则",
     "toolLabel": "工具",

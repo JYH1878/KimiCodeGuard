@@ -3,7 +3,16 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
-## [Unreleased]
+## [0.2.0] - 2026-08-15
+
+规则扩展：内置规则 3 → 6，补上 shell 包装绕过与防护被拆台的缺口。
+
+### 新增规则（M7）
+
+- `self-protect` 拒绝：拦对四类受保护路径的写 / 删 / 改名——`config.toml`（`KIMI_CODE_HOME` 覆盖优先，否则 `~/.kimi-code/config.toml`）、当前 hook exe、同目录 daemon exe（`KimiCodeGuard.exe` 与 `guard-daemon.exe` 两个名字都算）、`audit.db`（`%LOCALAPPDATA%\KimiCodeGuard\`）。覆盖面：Write / Edit 工具路径命中；Bash 里重定向（`>`、`>>` 及数字前缀变体）、`tee`、`cp` / `mv` / `copy` / `move` / `rename` 目标、`del` / `rm` / `sed -i` 命中。**读不拦**。路径规范化复用凭据规则那套（`~` 展开 / 统一斜杠 / canonicalize 兜底 8.3 短名与 junction）。
+- `shell-obfuscation` 剥壳重判：`bash -c` / `sh -c` / `cmd /c` / `powershell -Command` 的内层命令解出后对整条规则集重新判定（嵌套最多 2 层），内层命中谁走谁的判定（原因注明「经 shell 包装解出」）。编码执行：`base64 -d` / `certutil -decode` 管道进解释器、`powershell -enc` / `-EncodedCommand`——能干净解码就先解码再重判；解不出或没命中 → 弹窗问人（「执行不透明编码内容，无法审查」）。解码输入上限 64KB。
+- `git-destroy` 弹窗确认（无拒绝，销毁操作都有合法场景）：①历史 / 远端销毁一律问人——`push --delete` 与 `push <remote> :ref`、`branch -D`、`tag -d`、`reflog expire`、`gc --prune`、`filter-branch` / `filter-repo`、`update-ref -d`、`stash drop` / `clear`。②工作区销毁看仓库状态——`reset --hard`、`clean` 带 `-f`、`checkout -- <路径>`、`restore [--worktree] <路径>` 在 payload 的 cwd 跑 `git status --porcelain`（300ms 超时；git 不存在 / 非仓库 / 超时一律按有变更处理）：有变更 → 问人（「有未提交改动将永久丢失」），无变更 → 放行。放行例：`clean -n`、`reset --soft/--mixed`、`checkout 分支名`、`restore --staged`。
+- 绕过对抗集 57 → 121 条（每新规则 ≥8 拦 + ≥5 放）；allow 热路径不新增 IO（计数探测断言：非 git-destroy 语料探测调用数必须为 0）；git 探测真机 E2E 在 TEMP 建真实仓库验证。
 
 ### 审计面板（M6）
 
@@ -48,4 +57,5 @@
 - v0.1 只拦三条规则；shell 混淆、`git push --delete` 等已知缺口滚动至 v0.2。
 - 官方 fail-open 契约、二进制自校验、恶意用户手改配置不在防护范围内（见 THREAT_MODEL.md §4）。
 
+[0.2.0]: https://github.com/JYH1878/KimiCodeGuard/releases/tag/v0.2.0
 [0.1.0]: https://github.com/JYH1878/KimiCodeGuard/releases/tag/v0.1.0
