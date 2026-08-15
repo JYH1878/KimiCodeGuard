@@ -1,6 +1,11 @@
-# Release 流水线（照 参考/KimiCodeBar-Windows-main/.github/workflows/release.yml 改）
-# tag v* 触发：tauri-action 建草稿 Release 并传 NSIS 安装器；
-# 再把 guard-hook.exe 便携 zip 追加进同一草稿。草稿由人工核对正文后发布（REST API）。
+# Release 流水线（M7 重写：坑 22 根治）
+# tag v* 触发：本地构建 NSIS + 便携 zip → Release 全链路走 GitHub REST API——
+# 按 tag_name 建正式 Release（draft=false）+ 上传双资产，规范 URL 直接可下。
+#
+# 不再用 tauri-action + softprops/action-gh-release 混用（2026-08-15 M5 实测三连坑，
+# HANDOFF 坑 22）：tauri-action 0.5.x tag 触发建的是 untagged 草稿（不绑定 tag）；
+# softprops 按默认行为把草稿直接发布；untagged 期间上传的资产 URL 卡 untagged-* 别名，
+# 发布后 /releases/download/<tag>/<asset> 404。规范修法 = REST API 按 tag_name 建 Release。
 name: Release
 
 on:
@@ -39,19 +44,10 @@ jobs:
         working-directory: guard-daemon
         run: npm ci
 
-      # 构建 NSIS 安装包并上传到同名 GitHub Release（草稿）。
-      # guard-daemon 的 beforeBuildCommand 会自动执行 npm run build。
-      - name: 构建并发布 NSIS（草稿）
-        uses: tauri-apps/tauri-action@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          projectPath: guard-daemon
-          tagName: v__VERSION__
-          releaseName: "KimiCodeGuard for Windows v__VERSION__"
-          releaseBody: "见下方 Assets：NSIS 安装器（当前用户安装、免管理员、简体中文）+ guard-hook 便携 zip。安装器未签名，SmartScreen 提示属预期。"
-          releaseDraft: true
-          prerelease: false
+      # 本地 tauri CLI 构建 NSIS（beforeBuildCommand 自动执行 npm run build）。
+      - name: 构建 NSIS 安装包
+        working-directory: guard-daemon
+        run: npm run tauri build
 
       # 便携版：guard-hook.exe 单文件（只要命令行拦截、不要托盘的场景）
       - name: 打包 guard-hook 便携 zip
@@ -60,7 +56,51 @@ jobs:
           $ver = (Get-Content guard-hook/Cargo.toml | Select-String '^version = "(.+)"').Matches[0].Groups[1].Value
           Compress-Archive -Path "target/release/guard-hook.exe" -DestinationPath "target/release/KimiCodeGuard_${ver}_guard-hook-portable.zip" -Force
 
-      - name: 上传便携 zip 到同一 Release
-        uses: softprops/action-gh-release@v3
-        with:
-          files: target/release/KimiCodeGuard_*_guard-hook-portable.zip
+      # 建 Release（绑定 tag、draft=false）并上传双资产。
+      # 幂等：同 tag 重推先删旧 Release 重建（含历史 untagged 草稿残留）。
+      - name: 创建 Release 并上传双资产（REST API）
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $tag = $env:GITHUB_REF_NAME
+          $repo = $env:GITHUB_REPOSITORY
+          $ver = (Get-Content guard-hook/Cargo.toml | Select-String '^version = "(.+)"').Matches[0].Groups[1].Value
+          $headers = @{ Authorization = "Bearer $env:GITHUB_TOKEN"; Accept = "application/vnd.github+json" }
+
+          $setup = "guard-daemon/src-tauri/target/release/bundle/nsis/KimiCodeGuard_${ver}_x64-setup.exe"
+          $zip = "target/release/KimiCodeGuard_${ver}_guard-hook-portable.zip"
+          if (-not (Test-Path $setup)) { throw "NSIS 产物缺失: $setup" }
+          if (-not (Test-Path $zip)) { throw "zip 产物缺失: $zip" }
+
+          # 幂等：按 tag 查现存 Release（含 untagged 草稿残留），存在则删掉重建
+          try {
+            $existing = Invoke-RestMethod -Method Get -Uri "https://api.github.com/repos/$repo/releases/tags/$tag" -Headers $headers
+            Invoke-RestMethod -Method Delete -Uri "https://api.github.com/repos/$repo/releases/$($existing.id)" -Headers $headers | Out-Null
+            Write-Host "已删除旧 Release id=$($existing.id)"
+          } catch {
+            Write-Host "无现存 Release（404 属预期），直接创建"
+          }
+
+          $body = @{
+            tag_name   = $tag
+            name       = "KimiCodeGuard for Windows $tag"
+            body       = "见下方 Assets：NSIS 安装器（当前用户安装、免管理员、简体中文）+ guard-hook 便携 zip。安装器未签名，SmartScreen 提示属预期。"
+            draft      = $false
+            prerelease = $false
+          } | ConvertTo-Json
+          $release = Invoke-RestMethod -Method Post -Uri "https://api.github.com/repos/$repo/releases" -Headers $headers -Body $body
+          Write-Host "Release 已创建: id=$($release.id) tag=$($release.tag_name) draft=$($release.draft)"
+
+          foreach ($asset in @($setup, $zip)) {
+            $name = Split-Path $asset -Leaf
+            $upHeaders = @{
+              Authorization  = "Bearer $env:GITHUB_TOKEN"
+              Accept         = "application/vnd.github+json"
+              "Content-Type" = "application/octet-stream"
+            }
+            Invoke-RestMethod -Method Post -Uri "https://uploads.github.com/repos/$repo/releases/$($release.id)/assets?name=$name" -Headers $upHeaders -InFile $asset | Out-Null
+            Write-Host "资产已上传: $name"
+          }
+          Write-Host "完成：https://github.com/$repo/releases/download/$tag/$(Split-Path $setup -Leaf)"
