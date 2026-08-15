@@ -67,7 +67,11 @@ jobs:
           $tag = $env:GITHUB_REF_NAME
           $repo = $env:GITHUB_REPOSITORY
           $ver = (Get-Content guard-hook/Cargo.toml | Select-String '^version = "(.+)"').Matches[0].Groups[1].Value
-          $headers = @{ Authorization = "Bearer $env:GITHUB_TOKEN"; Accept = "application/vnd.github+json" }
+          $headers = @{
+            Authorization  = "Bearer $env:GITHUB_TOKEN"
+            Accept         = "application/vnd.github+json"
+            "Content-Type" = "application/json"
+          }
 
           $setup = "guard-daemon/src-tauri/target/release/bundle/nsis/KimiCodeGuard_${ver}_x64-setup.exe"
           $zip = "target/release/KimiCodeGuard_${ver}_guard-hook-portable.zip"
