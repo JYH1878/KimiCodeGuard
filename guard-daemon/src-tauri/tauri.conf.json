@@ -26,7 +26,8 @@
     ]
   },
   "bundle": {
-    "active": false,
+    "active": true,
+    "targets": "nsis",
     "publisher": "JYH1878",
     "copyright": "Copyright © 2026 JYH1878",
     "shortDescription": "Kimi Code 安全卫士托盘",
@@ -36,6 +37,17 @@
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.png"
-    ]
+    ],
+    "resources": {
+      "../../target/release/guard-hook.exe": "guard-hook.exe"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": ["SimpChinese"],
+        "displayLanguageSelector": false,
+        "installerHooks": "bundle/windows/installer.nsis"
+      }
+    }
   }
 }

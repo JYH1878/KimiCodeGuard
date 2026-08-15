@@ -1,0 +1,37 @@
+; KimiCodeGuard NSIS installer hooks (Tauri 2 installerHooks, SimpChinese / currentUser mode).
+; Contract: guard-hook.exe is installed as a bundle resource at $INSTDIR\guard-hook.exe
+; (tauri.conf.json: resources {"../../target/release/guard-hook.exe": "guard-hook.exe"}),
+; so it sits next to guard-daemon.exe in the install dir.
+;
+; POSTINSTALL : inject [[hooks]] into %USERPROFILE%\.kimi-code\config.toml pointing at the
+;               installed binaries (atomic write + readback verified inside guard-hook install).
+; PREUNINSTALL: remove the injected block before files are deleted, restoring the user's
+;               original config byte-for-byte (guard-hook uninstall removes only the marker
+;               block appended by install).
+; Both run non-fatal: any failure is logged to %LOCALAPPDATA%\KimiCodeGuard\installer.log
+; and the installer continues. A failed inject is detected later by the daemon self-protect
+; patrol (tray turns red, "一键修复" re-injects). See docs/THREAT_MODEL.md.
+;
+; NOTE: KIMI_CODE_HOME override is not applied here - the installer targets the default
+; config location. Users of KIMI_CODE_HOME should run the install subcommand manually.
+
+!macro KCG_LOG_HOOK_RESULT action exitcode
+  FileOpen $R9 "$LOCALAPPDATA\KimiCodeGuard\installer.log" a
+  FileSeek $R9 0 END
+  FileWrite $R9 "KimiCodeGuard NSIS ${action}: exit code ${exitcode}$\r$\n"
+  FileClose $R9
+!macroend
+
+!macro NSIS_HOOK_POSTINSTALL
+  DetailPrint "KimiCodeGuard: injecting hooks into $PROFILE\.kimi-code\config.toml"
+  nsExec::ExecToLog '"$INSTDIR\guard-hook.exe" install --config "$PROFILE\.kimi-code\config.toml" --daemon-path "$INSTDIR\guard-daemon.exe"'
+  Pop $R0
+  !insertmacro KCG_LOG_HOOK_RESULT "install" "$R0"
+!macroend
+
+!macro NSIS_HOOK_PREUNINSTALL
+  DetailPrint "KimiCodeGuard: removing hooks from $PROFILE\.kimi-code\config.toml"
+  nsExec::ExecToLog '"$INSTDIR\guard-hook.exe" uninstall --config "$PROFILE\.kimi-code\config.toml"'
+  Pop $R0
+  !insertmacro KCG_LOG_HOOK_RESULT "uninstall" "$R0"
+!macroend
