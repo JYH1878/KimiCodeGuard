@@ -1,4 +1,4 @@
-//! 规则判定核心（M8）：rm-force / cred-files / git-force-push / self-protect /
+//! 规则判定核心（M8.1）：rm-force / cred-files / git-force-push / self-protect /
 //! out-of-workspace / git-destroy / pipe-exec / shell-obfuscation 八条。
 //!
 //! `evaluate` 对外是纯函数：环境依赖（fs::canonicalize、USERPROFILE、受保护路径集、
@@ -902,12 +902,16 @@ fn ask_oow() -> Option<Decision> {
 /// 目标是否落在 cwd 子树外：字符串层规范化（~ 展开/斜杠统一/相对拼 cwd/去 . 与 ..）
 /// 后与 cwd 子树逐段比较（Windows 不区分大小写）；字符串层在子树内时 canonicalize
 /// 兜底（junction/8.3 把真实位置指到子树外 → 拦）。豁免：系统临时目录、
+/// POSIX 设备命名空间 /dev/*（M8.1，重定向到 /dev/null 等是丢弃输出非文件写入）、
 /// `~/.kimi-code/` 子树（Kimi Code 自身配置目录；config.toml 本体仍由 self-protect deny）。
 fn out_of_workspace_hit(raw: &str, cwd_norm: &str, env: &Env) -> bool {
     let Some(norm) = normalize_path(raw, Some(cwd_norm), env.home) else {
         return false;
     };
     if is_temp_path(&norm, env.temp) {
+        return false;
+    }
+    if is_dev_path(&norm) {
         return false;
     }
     if is_home_kimi_dir(&norm, env.home) {
@@ -943,6 +947,16 @@ fn is_temp_path(norm: &str, temp: &[String]) -> bool {
         let t = t.trim_end_matches('/').to_ascii_lowercase();
         !t.is_empty() && (lower == t || lower.starts_with(&format!("{t}/")))
     })
+}
+
+/// POSIX 设备命名空间豁免（M8.1 热修 /dev/null 误报）：规范化后以 `/dev/` 开头
+/// 且无盘符前缀的路径（/dev/null、/dev/zero、/dev/std*、/dev/tty…）是读写设备/
+/// 丢弃输出，不是工作区外文件写入；带盘符的 `D:/dev/…` 是真实文件路径，绝不豁免。
+/// 纯字符串判定，不碰 Env、不做 IO（热路径预算）。
+fn is_dev_path(norm: &str) -> bool {
+    let b = norm.as_bytes();
+    let has_drive_prefix = b.len() >= 2 && b[1] == b':' && b[0].is_ascii_alphabetic();
+    norm.starts_with("/dev/") && !has_drive_prefix
 }
 
 /// `~/.kimi-code/` 子树豁免：Kimi Code 自身配置目录（写入设置文件是正常工作流；
@@ -2253,6 +2267,36 @@ mod tests {
             evaluate_with(&p, &test_env(&no_canon, "C:/Users/tester", &temp)).kind(),
             "allow"
         );
+    }
+
+    // ---- M8.1：POSIX 设备路径豁免（/dev/null 误报热修） ----
+
+    #[test]
+    fn oow_dev_device_paths_exempt() {
+        // 重定向到设备 = 丢弃输出/读写设备，不是工作区外文件写入 → 放行
+        for c in [
+            "ls x 2>/dev/null",
+            "cat f > /dev/null",
+            "echo x &> /dev/null",
+            "tee /dev/null",
+            "echo x > /dev/zero",
+            "cat f > /dev/stdout",
+            "echo x > /dev/tty",
+        ] {
+            assert_eq!(eval_bash(c).kind(), "allow", "应放行: {c}");
+        }
+        let p = tool_payload("Write", "/dev/null", "D:/proj");
+        assert_eq!(
+            evaluate_with(&p, &test_env(&no_canon, "C:/Users/tester", &fake_temp())).kind(),
+            "allow"
+        );
+    }
+
+    #[test]
+    fn oow_drive_dev_path_not_exempt() {
+        // 带盘符的 D:/dev/… 是真实文件路径，绝不豁免 → 问人
+        assert_eq!(eval_bash("echo x > D:/dev/x.txt").kind(), "ask");
+        assert_eq!(eval_bash("rm -f D:/dev/x.txt").kind(), "ask");
     }
 
     #[test]

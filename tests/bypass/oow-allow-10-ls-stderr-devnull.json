@@ -1,0 +1,14 @@
+{
+  "name": "oow-allow-10-ls-stderr-devnull",
+  "payload": {
+    "hook_event_name": "PreToolUse",
+    "session_id": "session_bypass",
+    "cwd": "D:/proj",
+    "tool_name": "Bash",
+    "tool_input": {
+      "command": "ls x 2>/dev/null"
+    },
+    "tool_call_id": "tool_bypass"
+  },
+  "expect": "allow"
+}

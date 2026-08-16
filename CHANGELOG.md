@@ -3,6 +3,16 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.3.1] - 2026-08-16
+
+热修：out-of-workspace 不再误报 `/dev/null` 重定向。
+
+### 修复（M8.1）
+
+- 误报现象：`2>/dev/null`、`> /dev/null`、`&> /dev/null`、`tee /dev/null` 这类丢弃输出的重定向，被 out-of-workspace 规则当成「工作区外写入」弹窗问人——daemon 不在时直接挡下命令，在时弹窗等 55 秒超时。这是 shell 最高频惯用法之一，v0.3.0 已带着它发版，必须热修重发。
+- 修法：out-of-workspace 增加 POSIX 设备命名空间豁免——规范化后以 `/dev/` 开头且无盘符前缀的路径（`/dev/null`、`/dev/zero`、`/dev/std*`、`/dev/tty` 等）一律放行；带盘符的 `D:/dev/…` 是真实文件路径，绝不豁免。纯字符串判定，不进 Env、不做 IO。
+- 两条 v0.3 规则的判定与 ask 逻辑不变，本批只加豁免。绕过对抗集 167 → 172 条（新增 5 条放行语料：`ls x 2>/dev/null`、`cat f > /dev/null`、`echo x &> /dev/null`、`tee /dev/null`、`cmd 2>&1` 对照）。
+
 ## [0.3.0] - 2026-08-15
 
 规则扩展：内置规则 6 → 8，补上「远程内容直接灌入解释器」与「文件操作逃出工作区」两个高频缺口，并收掉 M7 验收实测放行的两个解码变体。

@@ -42,7 +42,7 @@
 | T5 | v1 引擎严格 schema：注入不认识的 hook 事件名 → 整个 hooks 段被静默忽略 | 注入块只写双引擎交集事件（PreToolUse/SessionStart/SessionEnd），永不注入 v2 独有事件；`install.rs` 有反向断言 | D4 补记（2026-08-14 实测，HANDOFF 坑 16） |
 | T6 | 依赖 `permission.rules` → v2 引擎根本不加载 | 防护只走 hooks 路径，永不依赖 permission.rules | D4（#2070） |
 | T7 | payload 字段漂移/缺失 → 解析崩溃或误判 | 缺字段 → 该规则跳过 + 记日志，整条非法 → 放行；fixtures 真实 payload 回归是发版门禁 | D5/D6；`payload.rs` + `fixtures/` |
-| T8 | 规则被路径花招绕过（8.3 短名、junction、UNC、命令链、反斜杠 `\rm`、大小写、shell 包装、编码） | 规范化（~ 展开/斜杠统一/canonicalize 兜底）+ 剥壳重判（M7 shell-obfuscation + M8 两解码补丁）+ tests/bypass/ 对抗集 167 条，规则改动必须全绿 | 不变量门禁；`rules.rs` + `tests/bypass/` |
+| T8 | 规则被路径花招绕过（8.3 短名、junction、UNC、命令链、反斜杠 `\rm`、大小写、shell 包装、编码） | 规范化（~ 展开/斜杠统一/canonicalize 兜底）+ 剥壳重判（M7 shell-obfuscation + M8 两解码补丁）+ tests/bypass/ 对抗集 172 条（2026-08-16 M8.1 起），规则改动必须全绿 | 不变量门禁；`rules.rs` + `tests/bypass/` |
 | T9 | 审计记录被事后篡改却无从发现 | append-only + sha256 哈希链（prev_hash 链接），托盘「校验审计链」报红含行号；导出 JSONL 供独立重算 | D7；`audit.rs` |
 | T10 | 安装前的危险操作无记录 | 轨 B：wire.jsonl 回溯解析（幂等增量、行级去重、撕裂末行不消费），同一 audit.db 同一链 | D7；`wire.rs` |
 | T11 | 防护被卸载/破坏后用户不知情 | 自保护巡检（`protect.rs`）：启动 + 每 5 分钟查注入块与 hook exe 存在性（marker 优先、裸块兜底——Kimi 重写 config 会剥注释，2026-08-15 实测），缺失 → 托盘显红 + 「一键修复」（重跑原子注入） | M5；`protect.rs` / `tray.rs` |
@@ -53,7 +53,7 @@
 | T16 | 危险命令套 shell 包装（bash -c / cmd /c / powershell -Command）或编码（base64 管道 / -EncodedCommand）绕过明文规则 | shell-obfuscation 剥壳重判：内层命令对整条规则集重新判定（嵌套最多 2 层），命中谁走谁的判定（注明「经 shell 包装解出」）；编码内容能干净解码先解码再判，解不出或没命中 → ask（不透明内容不静默放行）；解码输入上限 64KB 防内存放大。M8 补两个解码变体：`base64` 单横线纯字母含 d/D 的合并旗标簇（-di/-dw/-Di）按解码处理；PowerShell `[Convert]::FromBase64String('…')` 字符串字面量提取解码 | M7/M8；`rules.rs` rule_shell_obfuscation |
 | T17 | git 销毁性操作（历史 / 远端删除、工作区丢弃）不可逆且无感知 | git-destroy 弹窗确认：历史 / 远端形态（push --delete / :ref、branch -D、tag -d、reflog expire、gc --prune、filter-branch / filter-repo、update-ref -d、stash drop / clear）一律问人；工作区形态（reset --hard、clean -f、checkout -- <路径>、restore）探测 `git status --porcelain`（300ms 超时，git 缺失 / 非仓库 / 超时按有变更处理）：有变更问人（「有未提交改动将永久丢失」），干净放行 | M7；`rules.rs` rule_git_destroy + git_status_dirty |
 | T18 | 远程下载内容直接灌入解释器执行（curl \| bash、iwr \| iex、bash <(curl …)）——执行前无法审查 | pipe-exec 弹窗确认：下载器（curl/wget/iwr/Invoke-WebRequest/irm/Net.WebClient.Download*）经真管道或 `<(`/`$(`/反引号灌入解释器（bash/sh/zsh/dash/python/node/cmd/powershell/pwsh/iex）→ 问人；`\|\|`/`&&`/`;` 链分隔不算管道；剥壳重判自动覆盖（规则插在 shell-obfuscation 之前） | M8；`rules.rs` rule_pipe_exec |
-| T19 | agent 把文件写 / 删到工作区外（Write/Edit 逃逸、重定向 / tee / cp / mv / rm / sed -i 指到外面） | out-of-workspace 弹窗确认：目标路径规范化（~ 展开/统一斜杠/相对拼 cwd/canonicalize 兜底 junction 与 8.3）后落 cwd 子树外 → 问人；豁免系统临时目录（%TEMP%/%TMP%、/tmp、/var/tmp）与 `~/.kimi-code/` 子树（Kimi 自身配置目录，config.toml 本体仍由 self-protect deny）；读不触发；cwd 缺失跳过（D5） | M8；`rules.rs` rule_out_of_workspace |
+| T19 | agent 把文件写 / 删到工作区外（Write/Edit 逃逸、重定向 / tee / cp / mv / rm / sed -i 指到外面） | out-of-workspace 弹窗确认：目标路径规范化（~ 展开/统一斜杠/相对拼 cwd/canonicalize 兜底 junction 与 8.3）后落 cwd 子树外 → 问人；豁免系统临时目录（%TEMP%/%TMP%、/tmp、/var/tmp）、POSIX 设备命名空间 /dev/*（M8.1 修补 /dev/null 误报——重定向到设备是丢弃输出非文件写入；带盘符 D:/dev/… 不豁免，纯字符串判定）与 `~/.kimi-code/` 子树（Kimi 自身配置目录，config.toml 本体仍由 self-protect deny）；读不触发；cwd 缺失跳过（D5） | M8/M8.1；`rules.rs` rule_out_of_workspace |
 
 ## 4. 明确不防什么（写实话）
 

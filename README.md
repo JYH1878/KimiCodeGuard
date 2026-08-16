@@ -37,9 +37,9 @@ KimiCodeGuard 已拦截（规则 rm-force）：递归强制删除命令（rm -rf
 {"ts":1785000002000,"event":"wire.tool_call","session_id":"session_…","tool_name":"Bash","reason":"wire 回溯：wd_…/session_…/agents/main/wire.jsonl:9","payload":"{\"type\":\"context.append_loop_event\",…}","hash":"…"}
 ```
 
-## 安装（v0.3.0）
+## 安装（v0.3.1）
 
-到 [Releases](https://github.com/JYH1878/KimiCodeGuard/releases) 下载 `KimiCodeGuard_0.3.0_x64-setup.exe`（NSIS 安装器，当前用户安装、免管理员、简体中文）。安装末尾自动向 `~/.kimi-code/config.toml` 注入 hooks 并拉起托盘；卸载时逐字节还原配置。
+到 [Releases](https://github.com/JYH1878/KimiCodeGuard/releases) 下载 `KimiCodeGuard_0.3.1_x64-setup.exe`（NSIS 安装器，当前用户安装、免管理员、简体中文）。安装末尾自动向 `~/.kimi-code/config.toml` 注入 hooks 并拉起托盘；卸载时逐字节还原配置。
 
 - **SmartScreen 提示属预期**：安装器未做代码签名（项目没有签名证书），Windows 可能弹出「Windows 已保护你的电脑」——点「更多信息」→「仍要运行」即可。
 - 安装器注入失败不阻塞（写 `%LOCALAPPDATA%\KimiCodeGuard\installer.log`）；daemon 自保护巡检会发现并显红，托盘「一键修复」可重新注入。
@@ -61,6 +61,7 @@ KimiCodeGuard 已拦截（规则 rm-force）：递归强制删除命令（rm -rf
 - M6（2026-08-15 验收，随 v0.2.0 发版）：中文审计面板 —— 统计卡 / 14 天柱 / Top5 / 筛选分页 / 点行展开详情 / 新事件实时上屏；修复两处审计可靠性缺陷（偶发丢事件、自动刷新失效）。
 - M7（2026-08-15，v0.2.0）：规则扩展 —— `self-protect`（拦写受保护路径）、`shell-obfuscation`（剥壳重判 + 编码解码，最多 2 层）、`git-destroy`（历史 / 远端销毁一律问人，工作区销毁探测未提交改动后问人）；对抗语料 57 → 121 条。
 - M8（2026-08-15，v0.3.0）：规则再扩展 —— `pipe-exec`（下载内容灌入解释器问人）、`out-of-workspace`（写删逃出工作区问人）+ shell-obfuscation 两个解码补丁（`base64 -di` 合并旗标、PowerShell `FromBase64String` 字面量）；对抗语料 121 → 167 条。
+- M8.1（2026-08-16，v0.3.1 热修）：out-of-workspace 增 POSIX 设备命名空间豁免 —— `/dev/null`、`/dev/zero`、`/dev/std*`、`/dev/tty` 等丢弃输出的重定向不再误报；带盘符的 `D:/dev/…` 不豁免；对抗语料 167 → 172 条。
 
 ## 组成
 

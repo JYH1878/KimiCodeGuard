@@ -1,4 +1,4 @@
-//! 绕过对抗集 harness（M1 起，M8 扩展至 167 条语料 + 八规则门禁）。
+//! 绕过对抗集 harness（M1 起，M8 扩展至 167 条语料，M8.1 至 172 条 + 八规则门禁）。
 //!
 //! - corpus：仓库根 tests/bypass/*.json，每条 {name, payload, expect: deny|ask|allow}，
 //!   顶层只许 name/payload/expect/repo_dirty（M8 schema 收紧）。
