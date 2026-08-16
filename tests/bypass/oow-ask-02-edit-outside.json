@@ -1,0 +1,16 @@
+{
+  "name": "oow-ask-02-edit-outside",
+  "payload": {
+    "hook_event_name": "PreToolUse",
+    "session_id": "session_bypass",
+    "cwd": "D:/proj",
+    "tool_name": "Edit",
+    "tool_input": {
+      "path": "C:/Users/tester/Desktop/x.txt",
+      "old_string": "a",
+      "new_string": "b"
+    },
+    "tool_call_id": "tool_bypass"
+  },
+  "expect": "ask"
+}

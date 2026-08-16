@@ -1,0 +1,14 @@
+{
+  "name": "obfus-deny-16-ps-fromb64-utf16-rm",
+  "payload": {
+    "hook_event_name": "PreToolUse",
+    "session_id": "session_bypass",
+    "cwd": "D:/proj",
+    "tool_name": "Bash",
+    "tool_input": {
+      "command": "powershell -c \"iex ([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('UgBlAG0AbwB2AGUALQBJAHQAZQBtACAALQBSAGUAYwB1AHIAcwBlACAALQBGAG8AcgBjAGUAIABEADoALwBrAGMAZwAtAGYAYgA2ADQALQB2AGkAYwB0AGkAbQA=')))\""
+    },
+    "tool_call_id": "tool_bypass"
+  },
+  "expect": "deny"
+}

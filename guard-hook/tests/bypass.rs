@@ -1,6 +1,7 @@
-//! 绕过对抗集 harness（M1）。
+//! 绕过对抗集 harness（M1 起，M8 扩展至 167 条语料 + 八规则门禁）。
 //!
-//! - corpus：仓库根 tests/bypass/*.json，每条 {name, payload, expect: deny|ask|allow}。
+//! - corpus：仓库根 tests/bypass/*.json，每条 {name, payload, expect: deny|ask|allow}，
+//!   顶层只许 name/payload/expect/repo_dirty（M8 schema 收紧）。
 //!   文件坏、缺字段、expect 非法、name 与文件名不一致 → 测试失败，绝不跳过。
 //! - 全量过 evaluate_with 断言判定类别；home 注入固定假值 C:/Users/tester（机器无关）。
 //! - 每规则抽 ≥2 条用真实 exe 端到端喂 stdin 断言退出码（deny→2 / allow→0 / ask 三组）。
@@ -28,6 +29,20 @@ fn fake_protected() -> Vec<String> {
         "C:/tools/KimiCodeGuard.exe",
         "C:/tools/guard-daemon.exe",
         "C:/Users/tester/AppData/Local/KimiCodeGuard/audit.db",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
+}
+
+/// out-of-workspace 假临时目录集（机器无关）：corpus 假机 scratch C:/tmp、
+/// 假 home 的 LocalAppData/Temp + POSIX /tmp、/var/tmp。
+fn fake_temp() -> Vec<String> {
+    [
+        "C:/tmp",
+        "C:/Users/tester/AppData/Local/Temp",
+        "/tmp",
+        "/var/tmp",
     ]
     .iter()
     .map(|s| s.to_string())
@@ -90,6 +105,14 @@ fn load_corpus() -> Vec<Case> {
                 f.display()
             );
             assert!(payload.is_object(), "{} payload 必须是对象", f.display());
+            // M8 schema 收紧：顶层只许 name/payload/expect/repo_dirty，防手滑字段静默失效
+            for k in v.as_object().map(|m| m.keys()).into_iter().flatten() {
+                assert!(
+                    matches!(k.as_str(), "name" | "payload" | "expect" | "repo_dirty"),
+                    "{} 顶层字段非法: {k}（只许 name/payload/expect/repo_dirty）",
+                    f.display()
+                );
+            }
             let repo_dirty = v.get("repo_dirty").map(|x| {
                 x.as_bool()
                     .unwrap_or_else(|| panic!("{} repo_dirty 字段必须是布尔值", f.display()))
@@ -119,11 +142,12 @@ fn find_case(name: &str) -> Case {
 fn corpus_matches_expectations() {
     let cases = load_corpus();
     assert!(
-        cases.len() >= 30,
-        "bypass corpus 至少 30 条，当前 {} 条",
+        cases.len() >= 148,
+        "bypass corpus 至少 148 条（M8 完成口径），当前 {} 条",
         cases.len()
     );
     let protected = fake_protected();
+    let temp = fake_temp();
     for c in &cases {
         let bytes = serde_json::to_vec(&c.payload).unwrap();
         let p = Payload::parse(&bytes)
@@ -136,6 +160,7 @@ fn corpus_matches_expectations() {
             home: Some(FAKE_HOME),
             protected: &protected,
             git_dirty: &|_| dirty,
+            temp: &temp,
         };
         let d = evaluate_with(&p, &env);
         assert_eq!(
@@ -184,6 +209,15 @@ fn corpus_covers_block_and_pass_per_rule() {
         count("gd-", "ask") >= 8 && count("gd-", "allow") >= 5,
         "git-destroy 需 ≥8 问 + ≥5 放"
     );
+    // M8 新规则：pipe-exec / out-of-workspace 均为 ask 家族，各 ≥8 拦（=ask）+ ≥5 放
+    assert!(
+        count("pe-", "ask") >= 8 && count("pe-", "allow") >= 5,
+        "pipe-exec 需 ≥8 问 + ≥5 放"
+    );
+    assert!(
+        count("oow-", "ask") >= 8 && count("oow-", "allow") >= 5,
+        "out-of-workspace 需 ≥8 问 + ≥5 放"
+    );
 }
 
 /// M7 合同：allow 热路径不新增 IO——非 git-destroy 语料跑全量时，
@@ -192,6 +226,7 @@ fn corpus_covers_block_and_pass_per_rule() {
 fn non_destroy_corpus_never_probes_git() {
     let cases = load_corpus();
     let protected = fake_protected();
+    let temp = fake_temp();
     for c in &cases {
         let calls = std::cell::Cell::new(0u32);
         let probe = |_: &str| {
@@ -203,6 +238,7 @@ fn non_destroy_corpus_never_probes_git() {
             home: Some(FAKE_HOME),
             protected: &protected,
             git_dirty: &probe,
+            temp: &temp,
         };
         let bytes = serde_json::to_vec(&c.payload).unwrap();
         let p = Payload::parse(&bytes)
@@ -326,6 +362,9 @@ fn e2e_allow_exits_0() {
         "obfus-allow-01-bash-c-echo",
         "gd-allow-01-clean-dry-run",
         "protect-allow-01-read-config",
+        "pe-allow-01-curl-download-only",
+        "oow-allow-01-write-inside",
+        "oow-allow-06-bash-rm-temp",
     ] {
         let out = run_hook(&find_case(name).payload, &[]);
         assert_eq!(
@@ -356,6 +395,8 @@ fn e2e_ask_no_daemon_exits_2() {
         "git-ask-04-force-with-lease",
         "gd-ask-01-push-delete",
         "obfus-ask-02-b64-benign",
+        "pe-ask-01-curl-pipe-bash",
+        "oow-ask-01-write-outside",
     ] {
         let pipe = unique_pipe_name(); // 不存在daemon监听
         let out = run_hook(
@@ -377,8 +418,12 @@ fn e2e_ask_no_daemon_exits_2() {
 #[cfg(windows)]
 #[test]
 fn e2e_ask_fake_daemon_allow_exits_0() {
-    // git-force-push 与新 git-destroy 各抽一条：daemon 回 allow → exit 0
-    for name in ["git-ask-01-force", "gd-ask-03-branch-D"] {
+    // git-force-push 与新 git-destroy/out-of-workspace 各抽一条：daemon 回 allow → exit 0
+    for name in [
+        "git-ask-01-force",
+        "gd-ask-03-branch-D",
+        "oow-ask-03-bash-redirect-outside",
+    ] {
         let pipe = unique_pipe_name();
         let daemon = fake_daemon::serve_once(&pipe, Some(r#"{"decision":"allow"}"#));
         let out = run_hook(
@@ -402,8 +447,12 @@ fn e2e_ask_fake_daemon_allow_exits_0() {
 #[cfg(windows)]
 #[test]
 fn e2e_ask_fake_daemon_deny_exits_2() {
-    // git-force-push 与 shell-obfuscation 解码问人各抽一条
-    for name in ["git-ask-02-f", "obfus-ask-01-b64-pipe-gitforce"] {
+    // git-force-push 与 shell-obfuscation 解码问人、pipe-exec 各抽一条
+    for name in [
+        "git-ask-02-f",
+        "obfus-ask-01-b64-pipe-gitforce",
+        "pe-ask-02-wget-pipe-sh",
+    ] {
         let pipe = unique_pipe_name();
         let daemon =
             fake_daemon::serve_once(&pipe, Some(r#"{"decision":"deny","reason":"测试拒绝"}"#));
@@ -582,11 +631,13 @@ fn short_name_83_still_denied() {
         return;
     }
     // 短名形态（如 ENV~1.PRO）字符串层不命中名单，canonicalize 展开后必须命中
+    let temp = fake_temp();
     let env = Env {
         canon: &fs_canonicalize,
         home: Some(FAKE_HOME),
         protected: &[],
         git_dirty: &|_| false,
+        temp: &temp,
     };
     let d = evaluate_with(&read_payload_with(&short), &env);
     assert_eq!(

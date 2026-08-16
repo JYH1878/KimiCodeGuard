@@ -1,0 +1,14 @@
+{
+  "name": "pe-allow-01-curl-download-only",
+  "payload": {
+    "hook_event_name": "PreToolUse",
+    "session_id": "session_bypass",
+    "cwd": "D:/proj",
+    "tool_name": "Bash",
+    "tool_input": {
+      "command": "curl -s -o setup.sh http://example.invalid/setup.sh"
+    },
+    "tool_call_id": "tool_bypass"
+  },
+  "expect": "allow"
+}

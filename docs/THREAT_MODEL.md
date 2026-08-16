@@ -1,4 +1,4 @@
-# KimiCodeGuard 威胁模型（v0.2，2026-08-15）
+# KimiCodeGuard 威胁模型（v0.3，2026-08-15）
 
 > 配套文件：治理与决策记录见仓库根 `AGENTS.md`（D1–D9，本地治理文件）；工程细节见 `HANDOFF.md`。
 > 本文只写威胁边界与对策对照，不重复功能说明。
@@ -6,8 +6,9 @@
 ## 1. 保护什么
 
 1. **用户机器不被 AI agent 的危险命令毁掉**：`rm -rf`、读凭证文件、`git push --force`、
-   写 / 删 / 改受保护路径（self-protect）、git 销毁性操作、shell 混淆包装与编码执行的
-   危险内容这六类 v0.2 规则覆盖的操作，在 Kimi Code 执行前被拦下（deny）或经人确认（ask 弹窗）。
+   写 / 删 / 改受保护路径（self-protect）、git 销毁性操作、shell 混淆包装与编码执行、
+   远程下载内容直接灌入解释器（pipe-exec）、文件写删逃出工作区（out-of-workspace）
+   这八类 v0.3 规则覆盖的操作，在 Kimi Code 执行前被拦下（deny）或经人确认（ask 弹窗）。
 2. **操作可取证**：每一次 hook 判定（放行/拒绝/人工确认）都进 `audit.db` 的
    append-only 哈希链；安装前的历史会话经 wire.jsonl 回溯入库。用户能校验链条完整性、
    能导出 JSONL 举证——「谁、何时、执行了什么、谁批的」。
@@ -41,7 +42,7 @@
 | T5 | v1 引擎严格 schema：注入不认识的 hook 事件名 → 整个 hooks 段被静默忽略 | 注入块只写双引擎交集事件（PreToolUse/SessionStart/SessionEnd），永不注入 v2 独有事件；`install.rs` 有反向断言 | D4 补记（2026-08-14 实测，HANDOFF 坑 16） |
 | T6 | 依赖 `permission.rules` → v2 引擎根本不加载 | 防护只走 hooks 路径，永不依赖 permission.rules | D4（#2070） |
 | T7 | payload 字段漂移/缺失 → 解析崩溃或误判 | 缺字段 → 该规则跳过 + 记日志，整条非法 → 放行；fixtures 真实 payload 回归是发版门禁 | D5/D6；`payload.rs` + `fixtures/` |
-| T8 | 规则被路径花招绕过（8.3 短名、junction、UNC、命令链、反斜杠 `\rm`、大小写、shell 包装、编码） | 规范化（~ 展开/斜杠统一/canonicalize 兜底）+ 剥壳重判（M7 shell-obfuscation）+ tests/bypass/ 对抗集 121 条，规则改动必须全绿 | 不变量门禁；`rules.rs` + `tests/bypass/` |
+| T8 | 规则被路径花招绕过（8.3 短名、junction、UNC、命令链、反斜杠 `\rm`、大小写、shell 包装、编码） | 规范化（~ 展开/斜杠统一/canonicalize 兜底）+ 剥壳重判（M7 shell-obfuscation + M8 两解码补丁）+ tests/bypass/ 对抗集 167 条，规则改动必须全绿 | 不变量门禁；`rules.rs` + `tests/bypass/` |
 | T9 | 审计记录被事后篡改却无从发现 | append-only + sha256 哈希链（prev_hash 链接），托盘「校验审计链」报红含行号；导出 JSONL 供独立重算 | D7；`audit.rs` |
 | T10 | 安装前的危险操作无记录 | 轨 B：wire.jsonl 回溯解析（幂等增量、行级去重、撕裂末行不消费），同一 audit.db 同一链 | D7；`wire.rs` |
 | T11 | 防护被卸载/破坏后用户不知情 | 自保护巡检（`protect.rs`）：启动 + 每 5 分钟查注入块与 hook exe 存在性（marker 优先、裸块兜底——Kimi 重写 config 会剥注释，2026-08-15 实测），缺失 → 托盘显红 + 「一键修复」（重跑原子注入） | M5；`protect.rs` / `tray.rs` |
@@ -49,8 +50,10 @@
 | T13 | NSIS 注入失败 → 装完无防护 | installer hooks 失败不阻塞但写 `installer.log`；daemon 巡检下一轮发现显红，用户点「一键修复」兜底 | M5 止损设计；`installer.nsis` + `protect.rs` |
 | T14 | Kimi 重写 config.toml 剥掉注释 → marker 丢失 → install/修复重复注入同一事件双 hook | install 去重覆盖裸块（command 含 guard-hook.exe 的无 marker 段）；uninstall 不动裸块；NSIS 卸载优先还原装前备份，字节级一致 | 2026-08-15 实测（HANDOFF 坑 21）；`main.rs` remove_orphan_blocks / `installer.nsis` |
 | T15 | agent 改写防护自身：写 / 删 / 改名 config.toml、hook / daemon exe、audit.db → 防护被拆台 | self-protect 拒绝：受保护路径集（KIMI_CODE_HOME 覆盖优先、current_exe、同目录双 daemon 名、%LOCALAPPDATA% 审计库）在入口注入，Write/Edit 工具 + Bash 重定向 / tee / cp / mv / copy / move / rename / del / rm / sed -i 目标命中即拦；读不拦；canonicalize 兜底 8.3 短名与 junction；reason 写清人工路径（手动修改或用托盘一键修复） | M7；`rules.rs` rule_self_protect |
-| T16 | 危险命令套 shell 包装（bash -c / cmd /c / powershell -Command）或编码（base64 管道 / -EncodedCommand）绕过明文规则 | shell-obfuscation 剥壳重判：内层命令对整条规则集重新判定（嵌套最多 2 层），命中谁走谁的判定（注明「经 shell 包装解出」）；编码内容能干净解码先解码再判，解不出或没命中 → ask（不透明内容不静默放行）；解码输入上限 64KB 防内存放大 | M7；`rules.rs` rule_shell_obfuscation |
+| T16 | 危险命令套 shell 包装（bash -c / cmd /c / powershell -Command）或编码（base64 管道 / -EncodedCommand）绕过明文规则 | shell-obfuscation 剥壳重判：内层命令对整条规则集重新判定（嵌套最多 2 层），命中谁走谁的判定（注明「经 shell 包装解出」）；编码内容能干净解码先解码再判，解不出或没命中 → ask（不透明内容不静默放行）；解码输入上限 64KB 防内存放大。M8 补两个解码变体：`base64` 单横线纯字母含 d/D 的合并旗标簇（-di/-dw/-Di）按解码处理；PowerShell `[Convert]::FromBase64String('…')` 字符串字面量提取解码 | M7/M8；`rules.rs` rule_shell_obfuscation |
 | T17 | git 销毁性操作（历史 / 远端删除、工作区丢弃）不可逆且无感知 | git-destroy 弹窗确认：历史 / 远端形态（push --delete / :ref、branch -D、tag -d、reflog expire、gc --prune、filter-branch / filter-repo、update-ref -d、stash drop / clear）一律问人；工作区形态（reset --hard、clean -f、checkout -- <路径>、restore）探测 `git status --porcelain`（300ms 超时，git 缺失 / 非仓库 / 超时按有变更处理）：有变更问人（「有未提交改动将永久丢失」），干净放行 | M7；`rules.rs` rule_git_destroy + git_status_dirty |
+| T18 | 远程下载内容直接灌入解释器执行（curl \| bash、iwr \| iex、bash <(curl …)）——执行前无法审查 | pipe-exec 弹窗确认：下载器（curl/wget/iwr/Invoke-WebRequest/irm/Net.WebClient.Download*）经真管道或 `<(`/`$(`/反引号灌入解释器（bash/sh/zsh/dash/python/node/cmd/powershell/pwsh/iex）→ 问人；`\|\|`/`&&`/`;` 链分隔不算管道；剥壳重判自动覆盖（规则插在 shell-obfuscation 之前） | M8；`rules.rs` rule_pipe_exec |
+| T19 | agent 把文件写 / 删到工作区外（Write/Edit 逃逸、重定向 / tee / cp / mv / rm / sed -i 指到外面） | out-of-workspace 弹窗确认：目标路径规范化（~ 展开/统一斜杠/相对拼 cwd/canonicalize 兜底 junction 与 8.3）后落 cwd 子树外 → 问人；豁免系统临时目录（%TEMP%/%TMP%、/tmp、/var/tmp）与 `~/.kimi-code/` 子树（Kimi 自身配置目录，config.toml 本体仍由 self-protect deny）；读不触发；cwd 缺失跳过（D5） | M8；`rules.rs` rule_out_of_workspace |
 
 ## 4. 明确不防什么（写实话）
 
@@ -61,12 +64,12 @@
    这超出 v0.2 威胁模型（防的是 agent 误操作，不是本机攻击者）。
 3. **恶意用户手改 config.toml**：巡检（T11）只**发现** marker 丢失并显红，不阻止修改。
    用户改自己的配置文件是合法操作；本工具不与用户对打。
-4. **绕过规则的语义攻击**：v0.2 拦六条规则（rm-force / cred-files / git-force-push /
-   self-protect / shell-obfuscation / git-destroy，D9）。已知缺口：
-   3 层以上嵌套混淆（剥壳上限 2 层）、`pipe-exec` / `registry-write` / `scheduled-task` /
-   `out-of-workspace` 等 D9 滚动条目、工具名白名单之外的间接路径（如经 mcp 工具改写文件）、
-   工作区销毁对「已暂存但未提交」之外的更细粒度状态不做区分（一律问人是拦截方向）、
-   M7 验收实测放行的合同外解码变体（`base64 -di` 合并旗标、PowerShell `FromBase64String`+`iex`，2026-08-15）。
+4. **绕过规则的语义攻击**：v0.3 拦八条规则（rm-force / cred-files / git-force-push /
+   self-protect / shell-obfuscation / git-destroy / pipe-exec / out-of-workspace，D9）。已知缺口：
+   3 层以上嵌套混淆（剥壳上限 2 层）、下载后跨命令链执行（`curl -o f && bash f`，本批合同外）、
+   `registry-write` / `scheduled-task` / `git-dir-write`（D9 剩余三条，滚动 v0.4）、
+   工具名白名单之外的间接路径（如经 mcp 工具改写文件）、
+   工作区销毁对「已暂存但未提交」之外的更细粒度状态不做区分（一律问人是拦截方向）。
 5. **审计链的物理删除**：用户可以整库删掉 audit.db（自己的文件）。哈希链防的是
    「篡改不可见」，不防「销毁」；删除后下一次写入从创世行重新起链。
 6. **Kimi Code 进程内部的恶意行为**：模型若诱骗用户点「允许」，或在白名单工具里

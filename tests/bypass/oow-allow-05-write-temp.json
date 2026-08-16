@@ -1,0 +1,15 @@
+{
+  "name": "oow-allow-05-write-temp",
+  "payload": {
+    "hook_event_name": "PreToolUse",
+    "session_id": "session_bypass",
+    "cwd": "D:/proj",
+    "tool_name": "Write",
+    "tool_input": {
+      "path": "C:/tmp/scratch.txt",
+      "content": "x"
+    },
+    "tool_call_id": "tool_bypass"
+  },
+  "expect": "allow"
+}

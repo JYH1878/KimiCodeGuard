@@ -1,0 +1,15 @@
+{
+  "name": "oow-ask-01-write-outside",
+  "payload": {
+    "hook_event_name": "PreToolUse",
+    "session_id": "session_bypass",
+    "cwd": "D:/proj",
+    "tool_name": "Write",
+    "tool_input": {
+      "path": "D:/outside/notes.txt",
+      "content": "x"
+    },
+    "tool_call_id": "tool_bypass"
+  },
+  "expect": "ask"
+}

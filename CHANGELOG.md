@@ -3,6 +3,22 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.3.0] - 2026-08-15
+
+规则扩展：内置规则 6 → 8，补上「远程内容直接灌入解释器」与「文件操作逃出工作区」两个高频缺口，并收掉 M7 验收实测放行的两个解码变体。
+
+### 新增规则（M8）
+
+- `pipe-exec` 弹窗确认：下载器（`curl` / `wget` / `iwr` / `Invoke-WebRequest` / `irm` / `Net.WebClient.Download*`）经管道或进程替换灌入解释器（`bash` / `sh` / `zsh` / `dash` / `python` / `node` / `cmd` / `powershell` / `pwsh` / `iex`）→ 问人（「远程内容经管灌入解释器，执行前无法审查」）。形态覆盖：`curl … | bash`、`bash <(curl …)`、`sh -c "$(curl …)"`、`iwr … | iex`。`||` / `&&` / `;` 分隔不算管道；下载后跨命令链执行（`curl -o f && bash f`）本批不覆盖（见 THREAT_MODEL 残余缺口）。
+- `out-of-workspace` 弹窗确认：Write / Edit 工具的 `file_path` 与 Bash 写出目标（重定向 / `tee` / `cp` / `mv` / `copy` / `move` / `rename` / `del` / `rm` / `sed -i`）规范化后落在 cwd 子树外 → 问人（「工作区外文件操作」）。豁免系统临时目录（`%TEMP%` / `%TMP%`、`/tmp`、`/var/tmp`）与 `~/.kimi-code/`（Kimi Code 自身配置目录；config.toml 本体仍由 self-protect 拒绝）；读不触发；cwd 缺失跳过；canonicalize 兜底 junction / 8.3 逃逸。顺带修复 `normalize_path` 把 POSIX 根与 UNC 前缀坍缩的存量缺陷。
+- `shell-obfuscation` 两个解码补丁：①`base64` 合并旗标——单横线、纯字母、含 `d`/`D` 的旗标簇按解码处理（`-di` / `-dw` / `-Di`）；②PowerShell `[Convert]::FromBase64String('…')` 字符串字面量——提取解码重判，解不出或没命中 → 问人（不透明），变量输入不误报。
+- 绕过对抗集 121 → 167 条（pipe-exec 15、out-of-workspace 19、obfus 新 12），harness 收紧 schema 并给两条新规则加 ≥8 拦 + ≥5 放门禁断言；非 git-destroy 语料 git 探测仍必须为 0。
+
+### 已知边界
+
+- 下载后执行（`curl -o f && bash f`）跨命令链切段本批不覆盖；`registry-write` / `scheduled-task` / `git-dir-write` 滚入 v0.4。
+- 详见 `docs/THREAT_MODEL.md` §4。
+
 ## [0.2.0] - 2026-08-15
 
 规则扩展：内置规则 3 → 6，补上 shell 包装绕过与防护被拆台的缺口。
@@ -57,5 +73,6 @@
 - v0.1 只拦三条规则；shell 混淆、`git push --delete` 等已知缺口滚动至 v0.2。
 - 官方 fail-open 契约、二进制自校验、恶意用户手改配置不在防护范围内（见 THREAT_MODEL.md §4）。
 
+[0.3.0]: https://github.com/JYH1878/KimiCodeGuard/releases/tag/v0.3.0
 [0.2.0]: https://github.com/JYH1878/KimiCodeGuard/releases/tag/v0.2.0
 [0.1.0]: https://github.com/JYH1878/KimiCodeGuard/releases/tag/v0.1.0

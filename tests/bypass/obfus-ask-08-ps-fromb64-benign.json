@@ -1,0 +1,14 @@
+{
+  "name": "obfus-ask-08-ps-fromb64-benign",
+  "payload": {
+    "hook_event_name": "PreToolUse",
+    "session_id": "session_bypass",
+    "cwd": "D:/proj",
+    "tool_name": "Bash",
+    "tool_input": {
+      "command": "powershell -Command \"[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('R2V0LURhdGUgLUZvcm1hdCBv')) | iex\""
+    },
+    "tool_call_id": "tool_bypass"
+  },
+  "expect": "ask"
+}

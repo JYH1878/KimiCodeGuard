@@ -6,7 +6,7 @@ Kimi Code 的 Windows 安全卫士：托盘常驻，通过 PreToolUse hook 拦�
 
 ## 功能
 
-- **危险命令拦截**：内置六条规则——`rm-force` / `cred-files` 拒绝、`git-force-push` / `git-destroy` / `shell-obfuscation` 弹窗问人、`self-protect` 拒绝（写 / 删 / 改名 config.toml、hook / daemon exe、audit.db 四类受保护路径，读不拦）；shell 包装（`bash -c` / `cmd /c` / base64 管道）自动剥壳重判，55 秒无响应自动拒绝；Kimi Code 双引擎（v1/v2）通吃。
+- **危险命令拦截**：内置八条规则——`rm-force` / `cred-files` / `self-protect` 拒绝；`git-force-push` / `git-destroy` / `shell-obfuscation` / `pipe-exec` / `out-of-workspace` 弹窗问人。shell 包装（`bash -c` / `cmd /c` / base64 管道 / PowerShell `FromBase64String`）自动剥壳重判（最多 2 层），远程下载内容直接灌入解释器、文件写删逃出工作区都会弹窗确认，55 秒无响应自动拒绝；Kimi Code 双引擎（v1/v2）通吃。
 - **双轨审计**：轨 A = hook 实时事件；轨 B = wire.jsonl 回溯安装前历史。统一进 SQLite 哈希链——改动任意一条历史记录，「校验审计链」立即报红并定位行号。
 - **中文审计面板**：托盘「打开审计面板」一页看全——统计卡、14 天柱、高频工具 Top5、事件流（deny 红 / ask 黄 / allow 灰）、筛选分页、点行展开完整 payload，新事件实时上屏。
 - **托盘常驻**：随 Kimi Code 会话自动启停、空载自退；校验审计链 / 导出审计 JSONL / 回溯历史会话 / 开机自启 一键直达。
@@ -37,9 +37,9 @@ KimiCodeGuard 已拦截（规则 rm-force）：递归强制删除命令（rm -rf
 {"ts":1785000002000,"event":"wire.tool_call","session_id":"session_…","tool_name":"Bash","reason":"wire 回溯：wd_…/session_…/agents/main/wire.jsonl:9","payload":"{\"type\":\"context.append_loop_event\",…}","hash":"…"}
 ```
 
-## 安装（v0.2.0）
+## 安装（v0.3.0）
 
-到 [Releases](https://github.com/JYH1878/KimiCodeGuard/releases) 下载 `KimiCodeGuard_0.2.0_x64-setup.exe`（NSIS 安装器，当前用户安装、免管理员、简体中文）。安装末尾自动向 `~/.kimi-code/config.toml` 注入 hooks 并拉起托盘；卸载时逐字节还原配置。
+到 [Releases](https://github.com/JYH1878/KimiCodeGuard/releases) 下载 `KimiCodeGuard_0.3.0_x64-setup.exe`（NSIS 安装器，当前用户安装、免管理员、简体中文）。安装末尾自动向 `~/.kimi-code/config.toml` 注入 hooks 并拉起托盘；卸载时逐字节还原配置。
 
 - **SmartScreen 提示属预期**：安装器未做代码签名（项目没有签名证书），Windows 可能弹出「Windows 已保护你的电脑」——点「更多信息」→「仍要运行」即可。
 - 安装器注入失败不阻塞（写 `%LOCALAPPDATA%\KimiCodeGuard\installer.log`）；daemon 自保护巡检会发现并显红，托盘「一键修复」可重新注入。
@@ -60,10 +60,11 @@ KimiCodeGuard 已拦截（规则 rm-force）：递归强制删除命令（rm -rf
 - M5（2026-08-15）：v0.1.0 发布链路 —— NSIS 安装器（注入/还原 hooks）、自保护巡检（失效显红 + 一键修复）、CI 门禁、威胁模型与更新日志入库。
 - M6（2026-08-15 验收，随 v0.2.0 发版）：中文审计面板 —— 统计卡 / 14 天柱 / Top5 / 筛选分页 / 点行展开详情 / 新事件实时上屏；修复两处审计可靠性缺陷（偶发丢事件、自动刷新失效）。
 - M7（2026-08-15，v0.2.0）：规则扩展 —— `self-protect`（拦写受保护路径）、`shell-obfuscation`（剥壳重判 + 编码解码，最多 2 层）、`git-destroy`（历史 / 远端销毁一律问人，工作区销毁探测未提交改动后问人）；对抗语料 57 → 121 条。
+- M8（2026-08-15，v0.3.0）：规则再扩展 —— `pipe-exec`（下载内容灌入解释器问人）、`out-of-workspace`（写删逃出工作区问人）+ shell-obfuscation 两个解码补丁（`base64 -di` 合并旗标、PowerShell `FromBase64String` 字面量）；对抗语料 121 → 167 条。
 
 ## 组成
 
-- `guard-hook/` — Rust 单文件 exe：PreToolUse hook 薄 shim（stdin → 六条规则判定 → 事件上报 → exit 0/2），会话生命周期上报（lifecycle），内置 config 原子注入器。
+- `guard-hook/` — Rust 单文件 exe：PreToolUse hook 薄 shim（stdin → 八条规则判定 → 事件上报 → exit 0/2），会话生命周期上报（lifecycle），内置 config 原子注入器。
 - `guard-daemon/` — Tauri 2 托盘（独立 workspace）：ask 命名管道服务端 + 弹窗 UI、事件管道服务端 + SQLite/hash chain 审计库、wire.jsonl 回溯解析器（轨 B）、审计面板（只读查询 + 实时推送）、会话跟踪启停调度、托盘菜单（状态 / 打开审计面板 / 校验审计链 / 导出审计 JSONL / 回溯历史会话 / 开机自启 / 一键修复 / 退出）。
 - `fixtures/` — 真实 hook payload（已脱敏）+ wire.jsonl 合成样本，解析器与规则的唯一数据地基。
 - `docs/` — 威胁模型（THREAT_MODEL.md）、兼容矩阵（实测记录）；项目书待建。

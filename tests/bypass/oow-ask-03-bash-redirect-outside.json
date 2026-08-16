@@ -1,0 +1,14 @@
+{
+  "name": "oow-ask-03-bash-redirect-outside",
+  "payload": {
+    "hook_event_name": "PreToolUse",
+    "session_id": "session_bypass",
+    "cwd": "D:/proj",
+    "tool_name": "Bash",
+    "tool_input": {
+      "command": "echo x > D:/outside/x.txt"
+    },
+    "tool_call_id": "tool_bypass"
+  },
+  "expect": "ask"
+}

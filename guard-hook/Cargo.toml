@@ -1,6 +1,6 @@
 [package]
 name = "guard-hook"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 description = "KimiCodeGuard PreToolUse hook 薄 shim 与 config 注入器"
 
